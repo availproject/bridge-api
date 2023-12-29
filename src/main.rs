@@ -7,8 +7,8 @@ use axum::{
 };
 use jsonrpsee::{
     core::{client::ClientT, Error},
-    ws_client::{WsClient, WsClientBuilder},
     rpc_params,
+    ws_client::{WsClient, WsClientBuilder},
 };
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
@@ -24,7 +24,9 @@ struct AppState {
 async fn main() {
     let shared_state = Arc::new(AppState {
         jsonrpc_client: WsClientBuilder::default()
-            .build("wss://goldberg.avail.tools/ws").await.unwrap(),
+            .build("wss://goldberg.avail.tools/ws")
+            .await
+            .unwrap(),
         succinct_client: Client::builder().brotli(true).build().unwrap(),
         succinct_base_url: "https://beaconapi.succinct.xyz/api/integrations/vectorx/".to_owned(),
     });
@@ -110,7 +112,10 @@ async fn get_proof(
         Ok(resp) => resp,
         Err(err) => {
             println!("❌ error: {:?}", err);
-            return (StatusCode::BAD_REQUEST, Json(json!({ "error": err.to_string() })));
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({ "error": err.to_string() })),
+            );
         }
     };
     let block_number_response: Result<HeaderResponse, _> = state
@@ -122,12 +127,18 @@ async fn get_proof(
             Ok(num) => num,
             Err(err) => {
                 println!("❌ error: {:?}", err);
-                return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": err.to_string()})));
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({ "error": err.to_string()})),
+                );
             }
         },
         Err(err) => {
             println!("❌ error: {:?}", err);
-            return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": err.to_string()})));
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": err.to_string()})),
+            );
         }
     };
     let succinct_response = state
@@ -146,34 +157,49 @@ async fn get_proof(
                     ..
                 } => {
                     println!("❌ error: Succinct API returned unsuccessfully");
-                    return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": "Succinct API returned unsuccessfully" })));
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(json!({ "error": "Succinct API returned unsuccessfully" })),
+                    );
                 }
                 _ => {
                     println!("❌ error: Succinct API returned no data");
-                    return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": "Succinct API returned no data"})));
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(json!({ "error": "Succinct API returned no data"})),
+                    );
                 }
             },
             Err(err) => {
                 println!("❌ error: {:?}", err);
-                return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": err.to_string()})));
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({ "error": err.to_string()})),
+                );
             }
         },
         Err(err) => {
             println!("❌ error: {:?}", err);
-            return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": err.to_string()})));
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": err.to_string()})),
+            );
         }
     };
-    (StatusCode::OK, Json(json!(AggregatedResponse {
-        data_root_proof: succinct_data.merkle_branch,
-        leaf_proof: data_proof.proof,
-        range_hash: succinct_data.range_hash,
-        // TODO: make non-option when implemented
-        data_root_index: succinct_data.data_root_index.unwrap_or(1),
-        leaf: data_proof.leaf,
-        leaf_index: data_proof.leaf_index,
-        data_root: data_proof.root,
-        data_root_commitment: succinct_data.data_commitment,
-        block_hash: block_hash,
-        block_number: block_number,
-    })))
+    (
+        StatusCode::OK,
+        Json(json!(AggregatedResponse {
+            data_root_proof: succinct_data.merkle_branch,
+            leaf_proof: data_proof.proof,
+            range_hash: succinct_data.range_hash,
+            // TODO: make non-option when implemented
+            data_root_index: succinct_data.data_root_index.unwrap_or(1),
+            leaf: data_proof.leaf,
+            leaf_index: data_proof.leaf_index,
+            data_root: data_proof.root,
+            data_root_commitment: succinct_data.data_commitment,
+            block_hash: block_hash,
+            block_number: block_number,
+        })),
+    )
 }
