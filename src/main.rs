@@ -109,7 +109,7 @@ async fn get_proof(
     let data_proof = match data_proof_response {
         Ok(resp) => resp,
         Err(err) => {
-            println!("error: {:?}", err);
+            println!("❌ error: {:?}", err);
             return (StatusCode::BAD_REQUEST, Json(json!({ "error": err.to_string() })));
         }
     };
@@ -121,12 +121,12 @@ async fn get_proof(
         Ok(resp) => match usize::from_str_radix(&resp.number.trim_start_matches("0x"), 16) {
             Ok(num) => num,
             Err(err) => {
-                println!("error: {:?}", err);
+                println!("❌ error: {:?}", err);
                 return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": err.to_string()})));
             }
         },
         Err(err) => {
-            println!("error: {:?}", err);
+            println!("❌ error: {:?}", err);
             return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": err.to_string()})));
         }
     };
@@ -145,21 +145,21 @@ async fn get_proof(
                     success: Some(false),
                     ..
                 } => {
-                    println!("error: {:?}", "succinct api returned false");
+                    println!("❌ error: Succinct API returned unsuccessfully");
                     return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": "Succinct API returned unsuccessfully" })));
                 }
                 _ => {
-                    println!("error: {:?}", "succinct api returned no data");
+                    println!("❌ error: Succinct API returned no data");
                     return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": "Succinct API returned no data"})));
                 }
             },
             Err(err) => {
-                println!("error: {:?}", err);
+                println!("❌ error: {:?}", err);
                 return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": err.to_string()})));
             }
         },
         Err(err) => {
-            println!("error: {:?}", err);
+            println!("❌ error: {:?}", err);
             return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": err.to_string()})));
         }
     };
