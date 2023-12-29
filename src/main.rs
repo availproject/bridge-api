@@ -1,20 +1,18 @@
+use axum::http::StatusCode;
 use axum::{
-    routing::{get, post},
-    Router, http::uri::PathAndQuery,
-    extract::{Path, Query, Json, State},
+    extract::{Json, Path, Query, State},
+    routing::get,
+    Router,
 };
-use axum::{body::Bytes, http::StatusCode};
-use serde_json::{Value, json};
-use std::collections::HashMap;
-use std::error::Error;
-use serde::{Serialize, Deserialize};
 use jsonrpsee::{
     core::client::ClientT,
     http_client::{HttpClient, HttpClientBuilder},
-    rpc_params
+    rpc_params,
 };
-use std::sync::Arc;
 use reqwest::Client;
+use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
+use std::sync::Arc;
 
 struct AppState {
     jsonrpc_client: HttpClient,
@@ -24,14 +22,17 @@ struct AppState {
 #[tokio::main]
 async fn main() {
     let shared_state = Arc::new(AppState {
-        jsonrpc_client: HttpClientBuilder::default().build("https://goldberg.avail.tools/api").unwrap(),
+        jsonrpc_client: HttpClientBuilder::default()
+            .build("https://goldberg.avail.tools/api")
+            .unwrap(),
         succinct_client: Client::builder().brotli(true).build().unwrap(),
         succinct_base_url: "https://beaconapi.succinct.xyz/api/integrations/vectorx/".to_owned(),
     });
     // build our application with a single route
     let app = Router::new()
         .route("/", get(alive))
-        .route("/proof/:block_hash", get(get_proof)).with_state(shared_state);
+        .route("/proof/:block_hash", get(get_proof))
+        .with_state(shared_state);
 
     // run our app with hyper, listening globally on port 3000
     let listener = tokio::net::TcpListener::bind("0.0.0.0:8080").await.unwrap();
@@ -54,7 +55,7 @@ struct DataProofResponse {
     leaf_index: usize,
     number_of_leaves: usize,
     proof: Vec<String>,
-    root: String
+    root: String,
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone)]
@@ -65,7 +66,7 @@ struct HeaderResponse {
 #[derive(Deserialize, Serialize, Debug, Clone)]
 struct SuccinctAPIResponse {
     data: Option<SuccinctAPIData>,
-    success: Option<bool>
+    success: Option<bool>,
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone)]
@@ -88,56 +89,78 @@ struct AggregatedResponse {
     leaf: String,
     leaf_index: usize,
     data_root: String,
-    data_root_commitment: String,   
+    data_root_commitment: String,
     block_hash: String,
     block_number: usize,
 }
 
-async fn get_proof(Path(block_hash): Path<String>, Query(index_struct): Query<IndexStruct>, State(state): State<Arc<AppState>>) -> Result<Json<Value>, StatusCode> {
-    let data_proof_response: Result<DataProofResponse, _> = state.jsonrpc_client.request("kate_queryDataProof",  rpc_params![index_struct.index, &block_hash]).await;
+async fn get_proof(
+    Path(block_hash): Path<String>,
+    Query(index_struct): Query<IndexStruct>,
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<Value>, StatusCode> {
+    let data_proof_response: Result<DataProofResponse, _> = state
+        .jsonrpc_client
+        .request(
+            "kate_queryDataProof",
+            rpc_params![index_struct.index, &block_hash],
+        )
+        .await;
     let data_proof = match data_proof_response {
         Ok(resp) => resp,
         Err(err) => {
             println!("error: {:?}", err);
-            return Err(StatusCode::INTERNAL_SERVER_ERROR)
+            return Err(StatusCode::INTERNAL_SERVER_ERROR);
         }
     };
-    let block_number_response: Result<HeaderResponse, _> = state.jsonrpc_client.request("chain_getHeader",  rpc_params![&block_hash]).await;
+    let block_number_response: Result<HeaderResponse, _> = state
+        .jsonrpc_client
+        .request("chain_getHeader", rpc_params![&block_hash])
+        .await;
     let block_number = match block_number_response {
         Ok(resp) => match usize::from_str_radix(&resp.number.trim_start_matches("0x"), 16) {
             Ok(num) => num,
             Err(err) => {
                 println!("error: {:?}", err);
-                return Err(StatusCode::INTERNAL_SERVER_ERROR)
+                return Err(StatusCode::INTERNAL_SERVER_ERROR);
             }
         },
         Err(err) => {
             println!("error: {:?}", err);
-            return Err(StatusCode::INTERNAL_SERVER_ERROR)
+            return Err(StatusCode::INTERNAL_SERVER_ERROR);
         }
     };
-    let succinct_response = state.succinct_client.get(format!("{}{}", state.succinct_base_url, block_number)).send().await;
+    let succinct_response = state
+        .succinct_client
+        .get(format!("{}{}", state.succinct_base_url, block_number))
+        .send()
+        .await;
     let succinct_data = match succinct_response {
         Ok(resp) => match resp.json::<SuccinctAPIResponse>().await {
             Ok(data) => match data {
-                SuccinctAPIResponse { data: Some(data), .. } => data,
-                SuccinctAPIResponse { success: Some(false), .. } => {
+                SuccinctAPIResponse {
+                    data: Some(data), ..
+                } => data,
+                SuccinctAPIResponse {
+                    success: Some(false),
+                    ..
+                } => {
                     println!("error: {:?}", "succinct api returned false");
-                    return Err(StatusCode::INTERNAL_SERVER_ERROR)
-                },
+                    return Err(StatusCode::INTERNAL_SERVER_ERROR);
+                }
                 _ => {
                     println!("error: {:?}", "succinct api returned no data");
-                    return Err(StatusCode::INTERNAL_SERVER_ERROR)
+                    return Err(StatusCode::INTERNAL_SERVER_ERROR);
                 }
-            }
+            },
             Err(err) => {
                 println!("error: {:?}", err);
-                return Err(StatusCode::INTERNAL_SERVER_ERROR)
+                return Err(StatusCode::INTERNAL_SERVER_ERROR);
             }
         },
         Err(err) => {
             println!("error: {:?}", err);
-            return Err(StatusCode::INTERNAL_SERVER_ERROR)
+            return Err(StatusCode::INTERNAL_SERVER_ERROR);
         }
     };
     Ok(Json(json!(AggregatedResponse {
