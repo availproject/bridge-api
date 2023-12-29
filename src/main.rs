@@ -1,12 +1,13 @@
-use axum::http::StatusCode;
 use axum::{
     extract::{Json, Path, Query, State},
+    http::StatusCode,
+    response::IntoResponse,
     routing::get,
     Router,
 };
 use jsonrpsee::{
-    core::client::ClientT,
-    http_client::{HttpClient, HttpClientBuilder},
+    core::{client::ClientT, Error},
+    ws_client::{WsClient, WsClientBuilder},
     rpc_params,
 };
 use reqwest::Client;
@@ -15,16 +16,15 @@ use serde_json::{json, Value};
 use std::sync::Arc;
 
 struct AppState {
-    jsonrpc_client: HttpClient,
+    jsonrpc_client: WsClient,
     succinct_client: Client,
     succinct_base_url: String,
 }
 #[tokio::main]
 async fn main() {
     let shared_state = Arc::new(AppState {
-        jsonrpc_client: HttpClientBuilder::default()
-            .build("https://goldberg.avail.tools/api")
-            .unwrap(),
+        jsonrpc_client: WsClientBuilder::default()
+            .build("wss://goldberg.avail.tools/ws").await.unwrap(),
         succinct_client: Client::builder().brotli(true).build().unwrap(),
         succinct_base_url: "https://beaconapi.succinct.xyz/api/integrations/vectorx/".to_owned(),
     });
@@ -98,8 +98,8 @@ async fn get_proof(
     Path(block_hash): Path<String>,
     Query(index_struct): Query<IndexStruct>,
     State(state): State<Arc<AppState>>,
-) -> Result<Json<Value>, StatusCode> {
-    let data_proof_response: Result<DataProofResponse, _> = state
+) -> impl IntoResponse {
+    let data_proof_response: Result<DataProofResponse, Error> = state
         .jsonrpc_client
         .request(
             "kate_queryDataProof",
@@ -110,7 +110,7 @@ async fn get_proof(
         Ok(resp) => resp,
         Err(err) => {
             println!("error: {:?}", err);
-            return Err(StatusCode::INTERNAL_SERVER_ERROR);
+            return (StatusCode::BAD_REQUEST, Json(json!({ "error": err.to_string() })));
         }
     };
     let block_number_response: Result<HeaderResponse, _> = state
@@ -122,12 +122,12 @@ async fn get_proof(
             Ok(num) => num,
             Err(err) => {
                 println!("error: {:?}", err);
-                return Err(StatusCode::INTERNAL_SERVER_ERROR);
+                return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": err.to_string()})));
             }
         },
         Err(err) => {
             println!("error: {:?}", err);
-            return Err(StatusCode::INTERNAL_SERVER_ERROR);
+            return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": err.to_string()})));
         }
     };
     let succinct_response = state
@@ -146,24 +146,24 @@ async fn get_proof(
                     ..
                 } => {
                     println!("error: {:?}", "succinct api returned false");
-                    return Err(StatusCode::INTERNAL_SERVER_ERROR);
+                    return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": "Succinct API returned unsuccessfully" })));
                 }
                 _ => {
                     println!("error: {:?}", "succinct api returned no data");
-                    return Err(StatusCode::INTERNAL_SERVER_ERROR);
+                    return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": "Succinct API returned no data"})));
                 }
             },
             Err(err) => {
                 println!("error: {:?}", err);
-                return Err(StatusCode::INTERNAL_SERVER_ERROR);
+                return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": err.to_string()})));
             }
         },
         Err(err) => {
             println!("error: {:?}", err);
-            return Err(StatusCode::INTERNAL_SERVER_ERROR);
+            return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": err.to_string()})));
         }
     };
-    Ok(Json(json!(AggregatedResponse {
+    (StatusCode::OK, Json(json!(AggregatedResponse {
         data_root_proof: succinct_data.merkle_branch,
         leaf_proof: data_proof.proof,
         range_hash: succinct_data.range_hash,
