@@ -13,14 +13,8 @@ use jsonrpsee::{
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::{
-    sync::Arc,
-    pin::Pin
-};
-use tokio::{
-    join,
-    macros::support::Future
-};
+use std::{pin::Pin, sync::Arc};
+use tokio::{join, macros::support::Future};
 
 struct AppState {
     jsonrpc_client: WsClient,
@@ -108,16 +102,19 @@ async fn get_proof(
     Query(index_struct): Query<IndexStruct>,
     State(state): State<Arc<AppState>>,
 ) -> impl IntoResponse {
-    let data_proof_response_fut: Pin<Box<dyn Future<Output = Result<DataProofResponse, Error>> + Send>>  = state
+    let data_proof_response_fut: Pin<
+        Box<dyn Future<Output = Result<DataProofResponse, Error>> + Send>,
+    > = state.jsonrpc_client.request(
+        "kate_queryDataProof",
+        rpc_params![index_struct.index, &block_hash],
+    );
+    let block_number_response_fut: Pin<
+        Box<dyn Future<Output = Result<HeaderResponse, Error>> + Send>,
+    > = state
         .jsonrpc_client
-        .request(
-            "kate_queryDataProof",
-            rpc_params![index_struct.index, &block_hash],
-        );
-    let block_number_response_fut: Pin<Box<dyn Future<Output = Result<HeaderResponse, Error>> + Send>>  = state
-    .jsonrpc_client
-    .request("chain_getHeader", rpc_params![&block_hash]);
-    let (data_proof_response, block_number_response) = join!(data_proof_response_fut, block_number_response_fut);
+        .request("chain_getHeader", rpc_params![&block_hash]);
+    let (data_proof_response, block_number_response) =
+        join!(data_proof_response_fut, block_number_response_fut);
     let data_proof = match data_proof_response {
         Ok(resp) => resp,
         Err(err) => {
