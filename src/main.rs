@@ -18,6 +18,7 @@ use std::{pin::Pin, sync::Arc};
 use tokio::{macros::support::Future, try_join};
 use tracing;
 use tracing_subscriber;
+use std::env;
 
 #[global_allocator]
 static GLOBAL: Jemalloc = Jemalloc;
@@ -29,6 +30,7 @@ struct AppState {
 }
 #[tokio::main]
 async fn main() {
+    dotenvy::dotenv().unwrap();
     tracing_subscriber::fmt::init();
     let shared_state = Arc::new(AppState {
         jsonrpc_client: HttpClientBuilder::default()
@@ -43,8 +45,8 @@ async fn main() {
         .route("/proof/:block_hash", get(get_proof))
         .with_state(shared_state);
 
-    let host = "0.0.0.0";
-    let port: usize = 8080;
+    let host = env::var("HOST").unwrap_or("0.0.0.0".to_owned());
+    let port = env::var("PORT").unwrap_or("8080".to_owned());
     let listener = tokio::net::TcpListener::bind(format!("{}:{}", host, port)).await.unwrap();
     tracing::info!("🚀 Listening on {} port {}", host, port);
     axum::serve(listener, app).await.unwrap();
