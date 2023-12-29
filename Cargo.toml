@@ -7,6 +7,7 @@ edition = "2021"
 
 [dependencies]
 axum = { version = "0.7.2", features = ["http2", "macros", "tracing"] }
+jemallocator = "0.5.4"
 jsonrpsee = { version = "0.20.3", features = ["http-client", "macros", "async-client"] }
 reqwest = { version = "0.11.23", features = ["json", "brotli"] }
 serde = { version = "1.0.193", features = ["derive"] }

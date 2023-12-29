@@ -5,6 +5,7 @@ use axum::{
     routing::get,
     Router,
 };
+use jemallocator::Jemalloc;
 use jsonrpsee::{
     core::{client::ClientT, Error},
     http_client::{HttpClient, HttpClientBuilder},
@@ -15,6 +16,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{pin::Pin, sync::Arc};
 use tokio::{macros::support::Future, try_join};
+
+#[global_allocator]
+static GLOBAL: Jemalloc = Jemalloc;
 
 struct AppState {
     jsonrpc_client: HttpClient,
