@@ -7,26 +7,25 @@ use axum::{
 };
 use jsonrpsee::{
     core::{client::ClientT, Error},
+    http_client::{HttpClient, HttpClientBuilder},
     rpc_params,
-    ws_client::{WsClient, WsClientBuilder},
 };
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{pin::Pin, sync::Arc};
-use tokio::{join, macros::support::Future};
+use tokio::{macros::support::Future, try_join};
 
 struct AppState {
-    jsonrpc_client: WsClient,
+    jsonrpc_client: HttpClient,
     succinct_client: Client,
     succinct_base_url: String,
 }
 #[tokio::main]
 async fn main() {
     let shared_state = Arc::new(AppState {
-        jsonrpc_client: WsClientBuilder::default()
-            .build("wss://goldberg.avail.tools/ws")
-            .await
+        jsonrpc_client: HttpClientBuilder::default()
+            .build("https://goldberg.avail.tools/api")
             .unwrap(),
         succinct_client: Client::builder().brotli(true).build().unwrap(),
         succinct_base_url: "https://beaconapi.succinct.xyz/api/integrations/vectorx/".to_owned(),
@@ -113,20 +112,19 @@ async fn get_proof(
     > = state
         .jsonrpc_client
         .request("chain_getHeader", rpc_params![&block_hash]);
-    let (data_proof_response, block_number_response) =
-        join!(data_proof_response_fut, block_number_response_fut);
-    let data_proof = match data_proof_response {
-        Ok(resp) => resp,
-        Err(err) => {
-            println!("❌ error: {:?}", err);
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(json!({ "error": err.to_string() })),
-            );
-        }
-    };
-    let block_number = match block_number_response {
-        Ok(resp) => match usize::from_str_radix(&resp.number.trim_start_matches("0x"), 16) {
+    let (data_proof, block_number_response) =
+        match try_join!(data_proof_response_fut, block_number_response_fut) {
+            Ok((res_1, res_2)) => (res_1, res_2),
+            Err(err) => {
+                println!("❌ error: {:?}", err);
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({ "error": err.to_string() })),
+                );
+            }
+        };
+    let block_number =
+        match usize::from_str_radix(&block_number_response.number.trim_start_matches("0x"), 16) {
             Ok(num) => num,
             Err(err) => {
                 println!("❌ error: {:?}", err);
@@ -135,15 +133,7 @@ async fn get_proof(
                     Json(json!({ "error": err.to_string()})),
                 );
             }
-        },
-        Err(err) => {
-            println!("❌ error: {:?}", err);
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({ "error": err.to_string()})),
-            );
-        }
-    };
+        };
     let succinct_response = state
         .succinct_client
         .get(format!("{}{}", state.succinct_base_url, block_number))
