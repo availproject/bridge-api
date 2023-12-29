@@ -16,6 +16,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{pin::Pin, sync::Arc};
 use tokio::{macros::support::Future, try_join};
+use tracing;
+use tracing_subscriber;
 
 #[global_allocator]
 static GLOBAL: Jemalloc = Jemalloc;
@@ -27,6 +29,7 @@ struct AppState {
 }
 #[tokio::main]
 async fn main() {
+    tracing_subscriber::fmt::init();
     let shared_state = Arc::new(AppState {
         jsonrpc_client: HttpClientBuilder::default()
             .build("https://goldberg.avail.tools/api")
@@ -40,8 +43,10 @@ async fn main() {
         .route("/proof/:block_hash", get(get_proof))
         .with_state(shared_state);
 
-    // run our app with hyper, listening globally on port 3000
-    let listener = tokio::net::TcpListener::bind("0.0.0.0:8080").await.unwrap();
+    let host = "0.0.0.0";
+    let port: usize = 8080;
+    let listener = tokio::net::TcpListener::bind(format!("{}:{}", host, port)).await.unwrap();
+    tracing::info!("🚀 Listening on {} port {}", host, port);
     axum::serve(listener, app).await.unwrap();
 }
 
@@ -49,43 +54,43 @@ async fn alive() -> Result<Json<Value>, StatusCode> {
     Ok(Json(json!({ "name": "Avail Bridge API" })))
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Debug)]
 struct IndexStruct {
     index: u32,
 }
 
-#[derive(Deserialize, Serialize, Debug, Clone)]
+#[derive(Deserialize, Debug)]
 #[serde(rename_all = "camelCase")]
 struct DataProofResponse {
     leaf: String,
     leaf_index: usize,
-    number_of_leaves: usize,
+    // number_of_leaves: usize,
     proof: Vec<String>,
     root: String,
 }
 
-#[derive(Deserialize, Serialize, Debug, Clone)]
+#[derive(Deserialize, Debug)]
 struct HeaderResponse {
     number: String,
 }
 
-#[derive(Deserialize, Serialize, Debug, Clone)]
+#[derive(Deserialize, Debug)]
 struct SuccinctAPIResponse {
     data: Option<SuccinctAPIData>,
     success: Option<bool>,
 }
 
-#[derive(Deserialize, Serialize, Debug, Clone)]
+#[derive(Deserialize, Debug)]
 #[serde(rename_all = "camelCase")]
 struct SuccinctAPIData {
     range_hash: String,
     data_commitment: String,
     merkle_branch: Vec<String>,
-    data_root: String,
+    // data_root: String,
     data_root_index: Option<usize>,
 }
 
-#[derive(Deserialize, Serialize, Debug, Clone)]
+#[derive(Serialize, Debug)]
 #[serde(rename_all = "camelCase")]
 struct AggregatedResponse {
     data_root_proof: Vec<String>,
@@ -120,7 +125,7 @@ async fn get_proof(
         match try_join!(data_proof_response_fut, block_number_response_fut) {
             Ok((res_1, res_2)) => (res_1, res_2),
             Err(err) => {
-                println!("❌ error: {:?}", err);
+                tracing::error!("❌ {:?}", err);
                 return (
                     StatusCode::BAD_REQUEST,
                     Json(json!({ "error": err.to_string() })),
@@ -131,7 +136,7 @@ async fn get_proof(
         match usize::from_str_radix(&block_number_response.number.trim_start_matches("0x"), 16) {
             Ok(num) => num,
             Err(err) => {
-                println!("❌ error: {:?}", err);
+                tracing::error!("❌ {:?}", err);
                 return (
                     StatusCode::INTERNAL_SERVER_ERROR,
                     Json(json!({ "error": err.to_string()})),
@@ -153,14 +158,14 @@ async fn get_proof(
                     success: Some(false),
                     ..
                 } => {
-                    println!("❌ error: Succinct API returned unsuccessfully");
+                    tracing::error!("❌ Succinct API returned unsuccessfully");
                     return (
                         StatusCode::INTERNAL_SERVER_ERROR,
                         Json(json!({ "error": "Succinct API returned unsuccessfully" })),
                     );
                 }
                 _ => {
-                    println!("❌ error: Succinct API returned no data");
+                    tracing::error!("❌ Succinct API returned no data");
                     return (
                         StatusCode::INTERNAL_SERVER_ERROR,
                         Json(json!({ "error": "Succinct API returned no data"})),
@@ -168,7 +173,7 @@ async fn get_proof(
                 }
             },
             Err(err) => {
-                println!("❌ error: {:?}", err);
+                tracing::error!("❌ {:?}", err);
                 return (
                     StatusCode::INTERNAL_SERVER_ERROR,
                     Json(json!({ "error": err.to_string()})),
@@ -176,7 +181,7 @@ async fn get_proof(
             }
         },
         Err(err) => {
-            println!("❌ error: {:?}", err);
+            tracing::error!("❌ {:?}", err);
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(json!({ "error": err.to_string()})),
