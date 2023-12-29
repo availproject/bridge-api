@@ -14,11 +14,11 @@ use jsonrpsee::{
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use std::env;
 use std::{pin::Pin, sync::Arc};
 use tokio::{macros::support::Future, try_join};
 use tracing;
 use tracing_subscriber;
-use std::env;
 
 #[global_allocator]
 static GLOBAL: Jemalloc = Jemalloc;
@@ -47,7 +47,9 @@ async fn main() {
 
     let host = env::var("HOST").unwrap_or("0.0.0.0".to_owned());
     let port = env::var("PORT").unwrap_or("8080".to_owned());
-    let listener = tokio::net::TcpListener::bind(format!("{}:{}", host, port)).await.unwrap();
+    let listener = tokio::net::TcpListener::bind(format!("{}:{}", host, port))
+        .await
+        .unwrap();
     tracing::info!("🚀 Listening on {} port {}", host, port);
     axum::serve(listener, app).await.unwrap();
 }
