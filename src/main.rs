@@ -168,7 +168,7 @@ async fn get_proof(
         leaf_proof: data_proof.proof,
         range_hash: succinct_data.range_hash,
         // TODO: make non-option when implemented
-        data_root_index: succinct_data.data_root_index.unwrap_or(0),
+        data_root_index: succinct_data.data_root_index.unwrap_or(1),
         leaf: data_proof.leaf,
         leaf_index: data_proof.leaf_index,
         data_root: data_proof.root,
