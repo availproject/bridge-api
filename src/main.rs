@@ -17,8 +17,9 @@ use serde_json::{json, Value};
 use std::env;
 use std::{pin::Pin, sync::Arc};
 use tokio::{macros::support::Future, try_join};
+use tower_http::{compression::CompressionLayer, trace::TraceLayer};
 use tracing;
-use tracing_subscriber;
+use tracing_subscriber::prelude::*;
 
 #[global_allocator]
 static GLOBAL: Jemalloc = Jemalloc;
@@ -31,7 +32,15 @@ struct AppState {
 #[tokio::main]
 async fn main() {
     dotenvy::dotenv().unwrap();
-    tracing_subscriber::fmt::init();
+    tracing_subscriber::registry()
+        .with(tracing_subscriber::fmt::layer())
+        .with(
+            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
+                "bridge_api=debug,tower_http=debug,axum::rejection=trace".into()
+            }),
+        )
+        .init();
+
     let shared_state = Arc::new(AppState {
         jsonrpc_client: HttpClientBuilder::default()
             .build("https://goldberg.avail.tools/api")
@@ -43,6 +52,8 @@ async fn main() {
     let app = Router::new()
         .route("/", get(alive))
         .route("/proof/:block_hash", get(get_proof))
+        .layer(TraceLayer::new_for_http())
+        .layer(CompressionLayer::new())
         .with_state(shared_state);
 
     let host = env::var("HOST").unwrap_or("0.0.0.0".to_owned());
