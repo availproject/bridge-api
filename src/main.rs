@@ -19,7 +19,7 @@ use std::env;
 use std::{pin::Pin, sync::Arc};
 use tokio::{join, macros::support::Future};
 use tower_http::{compression::CompressionLayer, trace::TraceLayer};
-use tracing;
+
 use tracing_subscriber::prelude::*;
 
 #[global_allocator]
@@ -30,53 +30,13 @@ struct AppState {
     succinct_client: Client,
     succinct_base_url: String,
 }
-#[tokio::main]
-async fn main() {
-    dotenvy::dotenv().unwrap();
-    tracing_subscriber::registry()
-        .with(tracing_subscriber::fmt::layer())
-        .with(
-            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
-                "bridge_api=debug,tower_http=debug,axum::rejection=trace".into()
-            }),
-        )
-        .init();
 
-    let shared_state = Arc::new(AppState {
-        jsonrpc_client: HttpClientBuilder::default()
-            .build(env::var("JSONRPC_URL").unwrap_or("https://goldberg.avail.tools/api".to_owned()))
-            .unwrap(),
-        succinct_client: Client::builder().brotli(true).build().unwrap(),
-        succinct_base_url: env::var("SUCCINCT_URL")
-            .unwrap_or("https://beaconapi.succinct.xyz/api/integrations/vectorx/".to_owned()),
-    });
-
-    let app = Router::new()
-        .route("/", get(alive))
-        .route("/proof/:block_hash", get(get_proof))
-        .layer(TraceLayer::new_for_http())
-        .layer(CompressionLayer::new())
-        .with_state(shared_state);
-
-    let host = env::var("HOST").unwrap_or("0.0.0.0".to_owned());
-    let port = env::var("PORT").unwrap_or("8080".to_owned());
-    let listener = tokio::net::TcpListener::bind(format!("{}:{}", host, port))
-        .await
-        .unwrap();
-    tracing::info!("🚀 Listening on {} port {}", host, port);
-    axum::serve(listener, app).await.unwrap();
-}
-
-async fn alive() -> Result<Json<Value>, StatusCode> {
-    Ok(Json(json!({ "name": "Avail Bridge API" })))
-}
-
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize)]
 struct IndexStruct {
     index: u32,
 }
 
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct DataProofResponse {
     leaf: B256,
@@ -85,13 +45,13 @@ struct DataProofResponse {
     root: B256,
 }
 
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize)]
 struct SuccinctAPIResponse {
     data: Option<SuccinctAPIData>,
     success: Option<bool>,
 }
 
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct SuccinctAPIData {
     range_hash: B256,
@@ -101,7 +61,7 @@ struct SuccinctAPIData {
     block_number: usize,
 }
 
-#[derive(Serialize, Debug)]
+#[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct AggregatedResponse {
     data_root_proof: Vec<B256>,
@@ -114,6 +74,10 @@ struct AggregatedResponse {
     data_root_commitment: B256,
     block_hash: B256,
     block_number: usize,
+}
+
+async fn alive() -> Result<Json<Value>, StatusCode> {
+    Ok(Json(json!({ "name": "Avail Bridge API" })))
 }
 
 async fn get_proof(
@@ -193,8 +157,45 @@ async fn get_proof(
             leaf_index: data_proof.leaf_index,
             data_root: data_proof.root,
             data_root_commitment: succinct_data.data_commitment,
-            block_hash: block_hash,
+            block_hash,
             block_number: succinct_data.block_number,
         })),
     )
+}
+
+#[tokio::main]
+async fn main() {
+    dotenvy::dotenv().unwrap();
+    tracing_subscriber::registry()
+        .with(tracing_subscriber::fmt::layer())
+        .with(
+            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
+                "bridge_api=debug,tower_http=debug,axum::rejection=trace".into()
+            }),
+        )
+        .init();
+
+    let shared_state = Arc::new(AppState {
+        jsonrpc_client: HttpClientBuilder::default()
+            .build(env::var("JSONRPC_URL").unwrap_or("https://goldberg.avail.tools/api".to_owned()))
+            .unwrap(),
+        succinct_client: Client::builder().brotli(true).build().unwrap(),
+        succinct_base_url: env::var("SUCCINCT_URL")
+            .unwrap_or("https://beaconapi.succinct.xyz/api/integrations/vectorx/".to_owned()),
+    });
+
+    let app = Router::new()
+        .route("/", get(alive))
+        .route("/proof/:block_hash", get(get_proof))
+        .layer(TraceLayer::new_for_http())
+        .layer(CompressionLayer::new())
+        .with_state(shared_state);
+
+    let host = env::var("HOST").unwrap_or("0.0.0.0".to_owned());
+    let port = env::var("PORT").unwrap_or("8080".to_owned());
+    let listener = tokio::net::TcpListener::bind(format!("{}:{}", host, port))
+        .await
+        .unwrap();
+    tracing::info!("🚀 Listening on {} port {}", host, port);
+    axum::serve(listener, app).await.unwrap();
 }
