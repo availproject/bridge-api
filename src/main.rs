@@ -7,7 +7,7 @@ use axum::{
 };
 use jemallocator::Jemalloc;
 use jsonrpsee::{
-    core::{client::ClientT, Error},
+    core::{client::ClientT, Error as JsonrpseeError},
     http_client::{HttpClient, HttpClientBuilder},
     rpc_params,
 };
@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::env;
 use std::{pin::Pin, sync::Arc};
-use tokio::{macros::support::Future, try_join};
+use tokio::{join, macros::support::Future};
 use tower_http::{compression::CompressionLayer, trace::TraceLayer};
 use tracing;
 use tracing_subscriber::prelude::*;
@@ -79,14 +79,8 @@ struct IndexStruct {
 struct DataProofResponse {
     leaf: String,
     leaf_index: usize,
-    // number_of_leaves: usize,
     proof: Vec<String>,
     root: String,
-}
-
-#[derive(Deserialize, Debug)]
-struct HeaderResponse {
-    number: String,
 }
 
 #[derive(Deserialize, Debug)]
@@ -101,8 +95,8 @@ struct SuccinctAPIData {
     range_hash: String,
     data_commitment: String,
     merkle_branch: Vec<String>,
-    // data_root: String,
-    data_root_index: Option<usize>,
+    index: usize,
+    block_number: usize,
 }
 
 #[derive(Serialize, Debug)]
@@ -126,43 +120,26 @@ async fn get_proof(
     State(state): State<Arc<AppState>>,
 ) -> impl IntoResponse {
     let data_proof_response_fut: Pin<
-        Box<dyn Future<Output = Result<DataProofResponse, Error>> + Send>,
+        Box<dyn Future<Output = Result<DataProofResponse, JsonrpseeError>> + Send>,
     > = state.jsonrpc_client.request(
         "kate_queryDataProof",
         rpc_params![index_struct.index, &block_hash],
     );
-    let block_number_response_fut: Pin<
-        Box<dyn Future<Output = Result<HeaderResponse, Error>> + Send>,
-    > = state
-        .jsonrpc_client
-        .request("chain_getHeader", rpc_params![&block_hash]);
-    let (data_proof, block_number_response) =
-        match try_join!(data_proof_response_fut, block_number_response_fut) {
-            Ok((res_1, res_2)) => (res_1, res_2),
-            Err(err) => {
-                tracing::error!("❌ {:?}", err);
-                return (
-                    StatusCode::BAD_REQUEST,
-                    Json(json!({ "error": err.to_string() })),
-                );
-            }
-        };
-    let block_number =
-        match usize::from_str_radix(&block_number_response.number.trim_start_matches("0x"), 16) {
-            Ok(num) => num,
-            Err(err) => {
-                tracing::error!("❌ {:?}", err);
-                return (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(json!({ "error": err.to_string()})),
-                );
-            }
-        };
-    let succinct_response = state
+    let succinct_response_fut = state
         .succinct_client
-        .get(format!("{}{}", state.succinct_base_url, block_number))
-        .send()
-        .await;
+        .get(format!("{}{}", state.succinct_base_url, block_hash))
+        .send();
+    let (data_proof, succinct_response) = join!(data_proof_response_fut, succinct_response_fut);
+    let data_proof = match data_proof {
+        Ok(resp) => resp,
+        Err(err) => {
+            tracing::error!("❌ {:?}", err);
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({ "error": err.to_string()})),
+            );
+        }
+    };
     let succinct_data = match succinct_response {
         Ok(resp) => match resp.json::<SuccinctAPIResponse>().await {
             Ok(data) => match data {
@@ -198,7 +175,7 @@ async fn get_proof(
         Err(err) => {
             tracing::error!("❌ {:?}", err);
             return (
-                StatusCode::INTERNAL_SERVER_ERROR,
+                StatusCode::BAD_REQUEST,
                 Json(json!({ "error": err.to_string()})),
             );
         }
@@ -209,14 +186,13 @@ async fn get_proof(
             data_root_proof: succinct_data.merkle_branch,
             leaf_proof: data_proof.proof,
             range_hash: succinct_data.range_hash,
-            // TODO: make non-option when implemented
-            data_root_index: succinct_data.data_root_index.unwrap_or(1),
+            data_root_index: succinct_data.index,
             leaf: data_proof.leaf,
             leaf_index: data_proof.leaf_index,
             data_root: data_proof.root,
             data_root_commitment: succinct_data.data_commitment,
             block_hash: block_hash,
-            block_number: block_number,
+            block_number: succinct_data.block_number,
         })),
     )
 }
