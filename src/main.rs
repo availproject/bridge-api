@@ -1,3 +1,4 @@
+use alloy_primitives::B256;
 use axum::{
     extract::{Json, Path, Query, State},
     http::StatusCode,
@@ -43,12 +44,13 @@ async fn main() {
 
     let shared_state = Arc::new(AppState {
         jsonrpc_client: HttpClientBuilder::default()
-            .build("https://goldberg.avail.tools/api")
+            .build(env::var("JSONRPC_URL").unwrap_or("https://goldberg.avail.tools/api".to_owned()))
             .unwrap(),
         succinct_client: Client::builder().brotli(true).build().unwrap(),
-        succinct_base_url: "https://beaconapi.succinct.xyz/api/integrations/vectorx/".to_owned(),
+        succinct_base_url: env::var("SUCCINCT_URL")
+            .unwrap_or("https://beaconapi.succinct.xyz/api/integrations/vectorx/".to_owned()),
     });
-    // build our application with a single route
+
     let app = Router::new()
         .route("/", get(alive))
         .route("/proof/:block_hash", get(get_proof))
@@ -77,10 +79,10 @@ struct IndexStruct {
 #[derive(Deserialize, Debug)]
 #[serde(rename_all = "camelCase")]
 struct DataProofResponse {
-    leaf: String,
-    leaf_index: usize,
-    proof: Vec<String>,
-    root: String,
+    leaf: B256,
+    leaf_index: u32,
+    proof: Vec<B256>,
+    root: B256,
 }
 
 #[derive(Deserialize, Debug)]
@@ -92,30 +94,30 @@ struct SuccinctAPIResponse {
 #[derive(Deserialize, Debug)]
 #[serde(rename_all = "camelCase")]
 struct SuccinctAPIData {
-    range_hash: String,
-    data_commitment: String,
-    merkle_branch: Vec<String>,
-    index: usize,
+    range_hash: B256,
+    data_commitment: B256,
+    merkle_branch: Vec<B256>,
+    index: u8,
     block_number: usize,
 }
 
 #[derive(Serialize, Debug)]
 #[serde(rename_all = "camelCase")]
 struct AggregatedResponse {
-    data_root_proof: Vec<String>,
-    leaf_proof: Vec<String>,
-    range_hash: String,
-    data_root_index: usize,
-    leaf: String,
-    leaf_index: usize,
-    data_root: String,
-    data_root_commitment: String,
-    block_hash: String,
+    data_root_proof: Vec<B256>,
+    leaf_proof: Vec<B256>,
+    range_hash: B256,
+    data_root_index: u8,
+    leaf: B256,
+    leaf_index: u32,
+    data_root: B256,
+    data_root_commitment: B256,
+    block_hash: B256,
     block_number: usize,
 }
 
 async fn get_proof(
-    Path(block_hash): Path<String>,
+    Path(block_hash): Path<B256>,
     Query(index_struct): Query<IndexStruct>,
     State(state): State<Arc<AppState>>,
 ) -> impl IntoResponse {
