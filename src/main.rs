@@ -8,7 +8,7 @@ use axum::{
 };
 use jemallocator::Jemalloc;
 use jsonrpsee::{
-    core::{client::ClientT, Error as JsonrpseeError},
+    core::client::ClientT,
     http_client::{HttpClient, HttpClientBuilder},
     rpc_params,
 };
@@ -16,8 +16,8 @@ use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::env;
-use std::{pin::Pin, sync::Arc};
-use tokio::{join, macros::support::Future};
+use std::sync::Arc;
+use tokio::join;
 use tower_http::{compression::CompressionLayer, trace::TraceLayer};
 
 use tracing_subscriber::prelude::*;
@@ -85,18 +85,25 @@ async fn get_proof(
     Query(index_struct): Query<IndexStruct>,
     State(state): State<Arc<AppState>>,
 ) -> impl IntoResponse {
-    let data_proof_response_fut: Pin<
-        Box<dyn Future<Output = Result<DataProofResponse, JsonrpseeError>> + Send>,
-    > = state.jsonrpc_client.request(
-        "kate_queryDataProof",
-        rpc_params![index_struct.index, &block_hash],
-    );
-    let succinct_response_fut = state
-        .succinct_client
-        .get(format!("{}{}", state.succinct_base_url, block_hash))
-        .send();
+    let cloned_state = state.clone();
+    let data_proof_response_fut = tokio::spawn(async move {
+        cloned_state
+            .jsonrpc_client
+            .request(
+                "kate_queryDataProof",
+                rpc_params![index_struct.index, &block_hash],
+            )
+            .await
+    });
+    let succinct_response_fut = tokio::spawn(async move {
+        state
+            .succinct_client
+            .get(format!("{}{}", state.succinct_base_url, block_hash))
+            .send()
+            .await
+    });
     let (data_proof, succinct_response) = join!(data_proof_response_fut, succinct_response_fut);
-    let data_proof = match data_proof {
+    let data_proof: DataProofResponse = match data_proof.unwrap() {
         Ok(resp) => resp,
         Err(err) => {
             tracing::error!("❌ {:?}", err);
@@ -106,7 +113,7 @@ async fn get_proof(
             );
         }
     };
-    let succinct_data = match succinct_response {
+    let succinct_data = match succinct_response.unwrap() {
         Ok(resp) => match resp.json::<SuccinctAPIResponse>().await {
             Ok(data) => match data {
                 SuccinctAPIResponse {
