@@ -96,51 +96,24 @@ async fn get_proof(
             .await
     });
     let succinct_response_fut = tokio::spawn(async move {
-        state
+        let succinct_response = state
             .succinct_client
             .get(format!("{}{}", state.succinct_base_url, block_hash))
             .send()
-            .await
+            .await;
+        match succinct_response {
+            Ok(resp) => resp.json::<SuccinctAPIResponse>().await,
+            Err(err) => Err(err),
+        }
     });
     let (data_proof, succinct_response) = join!(data_proof_response_fut, succinct_response_fut);
-    let data_proof: DataProofResponse = match data_proof.unwrap() {
-        Ok(resp) => resp,
-        Err(err) => {
-            tracing::error!("❌ {:?}", err);
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(json!({ "error": err.to_string()})),
-            );
-        }
-    };
-    let succinct_data = match succinct_response.unwrap() {
-        Ok(resp) => match resp.json::<SuccinctAPIResponse>().await {
-            Ok(data) => match data {
-                SuccinctAPIResponse {
-                    data: Some(data), ..
-                } => data,
-                SuccinctAPIResponse {
-                    success: Some(false),
-                    ..
-                } => {
-                    tracing::error!("❌ Succinct API returned unsuccessfully");
-                    return (
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        Json(json!({ "error": "Succinct API returned unsuccessfully" })),
-                    );
-                }
-                _ => {
-                    tracing::error!("❌ Succinct API returned no data");
-                    return (
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        Json(json!({ "error": "Succinct API returned no data"})),
-                    );
-                }
-            },
+    let data_proof: DataProofResponse = match data_proof {
+        Ok(resp) => match resp {
+            Ok(data) => data,
             Err(err) => {
                 tracing::error!("❌ {:?}", err);
                 return (
-                    StatusCode::INTERNAL_SERVER_ERROR,
+                    StatusCode::BAD_REQUEST,
                     Json(json!({ "error": err.to_string()})),
                 );
             }
@@ -148,7 +121,45 @@ async fn get_proof(
         Err(err) => {
             tracing::error!("❌ {:?}", err);
             return (
-                StatusCode::BAD_REQUEST,
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": err.to_string()})),
+            );
+        }
+    };
+    let succinct_data = match succinct_response {
+        Ok(data) => match data {
+            Ok(SuccinctAPIResponse {
+                data: Some(data), ..
+            }) => data,
+            Ok(SuccinctAPIResponse {
+                success: Some(false),
+                ..
+            }) => {
+                tracing::error!("❌ Succinct API returned unsuccessfully");
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({ "error": "Succinct API returned unsuccessfully" })),
+                );
+            }
+            Err(err) => {
+                tracing::error!("❌ {:?}", err);
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({ "error": err.to_string()})),
+                );
+            }
+            _ => {
+                tracing::error!("❌ Succinct API returned no data");
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({ "error": "Succinct API returned no data"})),
+                );
+            }
+        },
+        Err(err) => {
+            tracing::error!("❌ {:?}", err);
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
                 Json(json!({ "error": err.to_string()})),
             );
         }
