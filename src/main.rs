@@ -82,6 +82,7 @@ async fn alive() -> Result<Json<Value>, StatusCode> {
     Ok(Json(json!({ "name": "Avail Bridge API" })))
 }
 
+#[inline(always)]
 async fn get_proof(
     Path(block_hash): Path<B256>,
     Query(index_struct): Query<IndexStruct>,

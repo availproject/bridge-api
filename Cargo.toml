@@ -25,6 +25,9 @@ tikv-jemallocator = "0.5.4"
 inherits = "release"
 debug = true
 
+[profile.release]
+panic = "abort"
+
 [profile.maxperf]
 inherits = "release"
 lto = "fat"
