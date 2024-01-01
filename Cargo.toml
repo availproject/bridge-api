@@ -9,7 +9,6 @@ edition = "2021"
 alloy-primitives = { version = "0.5.4", features = ["serde"] }
 axum = { version = "0.7.2", features = ["http2", "macros", "tracing"] }
 dotenvy = "0.15.7"
-jemallocator = "0.5.4"
 jsonrpsee = { version = "0.20.3", features = ["http-client", "macros", "async-client"] }
 reqwest = { version = "0.11.23", features = ["json", "brotli"] }
 serde = { version = "1.0.193", features = ["derive"] }
@@ -18,3 +17,15 @@ tokio = { version = "1.35.1", features = ["macros", "rt-multi-thread", "parking_
 tower-http = { version = "0.5.0", features = ["trace", "compression-br"] }
 tracing = "0.1.40"
 tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
+
+[target.'cfg(not(target_env = "msvc"))'.dependencies]
+tikv-jemallocator = "0.5.4"
+
+[profile.debug-fast]
+inherits = "release"
+debug = true
+
+[profile.maxperf]
+inherits = "release"
+lto = "fat"
+codegen-units = 1

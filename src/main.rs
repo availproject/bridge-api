@@ -6,7 +6,6 @@ use axum::{
     routing::get,
     Router,
 };
-use jemallocator::Jemalloc;
 use jsonrpsee::{
     core::client::ClientT,
     http_client::{HttpClient, HttpClientBuilder},
@@ -17,11 +16,14 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::env;
 use std::sync::Arc;
+#[cfg(not(target_env = "msvc"))]
+use tikv_jemallocator::Jemalloc;
 use tokio::join;
 use tower_http::{compression::CompressionLayer, trace::TraceLayer};
 
 use tracing_subscriber::prelude::*;
 
+#[cfg(not(target_env = "msvc"))]
 #[global_allocator]
 static GLOBAL: Jemalloc = Jemalloc;
 
