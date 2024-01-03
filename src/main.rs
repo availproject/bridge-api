@@ -186,7 +186,7 @@ async fn get_proof(
 
 #[tokio::main]
 async fn main() {
-    dotenvy::dotenv().unwrap();
+    dotenvy::dotenv().ok();
     tracing_subscriber::registry()
         .with(tracing_subscriber::fmt::layer())
         .with(
