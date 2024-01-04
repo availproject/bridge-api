@@ -117,6 +117,7 @@ async fn get_proof(
                 tracing::error!("❌ {:?}", err);
                 return (
                     StatusCode::BAD_REQUEST,
+                    [("Cache-Control", "max-age=300, must-revalidate")],
                     Json(json!({ "error": err.to_string()})),
                 );
             }
@@ -125,6 +126,7 @@ async fn get_proof(
             tracing::error!("❌ {:?}", err);
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
+                [("Cache-Control", "max-age=300, must-revalidate")],
                 Json(json!({ "error": err.to_string()})),
             );
         }
@@ -141,6 +143,7 @@ async fn get_proof(
                 tracing::error!("❌ Succinct API returned unsuccessfully");
                 return (
                     StatusCode::INTERNAL_SERVER_ERROR,
+                    [("Cache-Control", "max-age=300, must-revalidate")],
                     Json(json!({ "error": "Succinct API returned unsuccessfully" })),
                 );
             }
@@ -148,6 +151,7 @@ async fn get_proof(
                 tracing::error!("❌ {:?}", err);
                 return (
                     StatusCode::INTERNAL_SERVER_ERROR,
+                    [("Cache-Control", "max-age=300, must-revalidate")],
                     Json(json!({ "error": err.to_string()})),
                 );
             }
@@ -155,6 +159,7 @@ async fn get_proof(
                 tracing::error!("❌ Succinct API returned no data");
                 return (
                     StatusCode::INTERNAL_SERVER_ERROR,
+                    [("Cache-Control", "max-age=300, must-revalidate")],
                     Json(json!({ "error": "Succinct API returned no data"})),
                 );
             }
@@ -163,12 +168,15 @@ async fn get_proof(
             tracing::error!("❌ {:?}", err);
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
+                [("Cache-Control", "max-age=300, must-revalidate")],
                 Json(json!({ "error": err.to_string()})),
             );
         }
     };
+
     (
         StatusCode::OK,
+        [("Cache-Control", "public, max-age=31536000")],
         Json(json!(AggregatedResponse {
             data_root_proof: succinct_data.merkle_branch,
             leaf_proof: data_proof.proof,
