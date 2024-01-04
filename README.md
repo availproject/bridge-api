@@ -22,6 +22,13 @@ RUSTFLAGS="-C target-cpu=native" cargo run --profile maxperf
 
 ## Usage
 * The bridge API operates on the 8080 port by default (can be configured).
+* To verify that the API is live, you can query the root like:
+```bash
+# curl <endpoint URL>
+curl http://localhost:8080
+# should return:
+# {"name":"Avail Bridge API"}
+```
 * To generate a proof, simply query the `/proof` endpoint with the block hash and extrinsic index like (both are
 required):
 ```bash
