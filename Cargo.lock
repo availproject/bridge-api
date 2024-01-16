@@ -412,7 +412,6 @@ dependencies = [
  "alloy-primitives",
  "axum",
  "dotenvy",
- "hex-literal",
  "jsonrpsee",
  "reqwest",
  "serde",
