@@ -1,4 +1,4 @@
-use alloy_primitives::{B256, U256, BlockNumber};
+use alloy_primitives::{BlockNumber, B256, U256};
 use axum::{
     extract::{Json, Path, Query, State},
     http::StatusCode,
@@ -14,13 +14,13 @@ use jsonrpsee::{
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use sha3::{Digest, Keccak256};
 use std::env;
 use std::sync::Arc;
 #[cfg(not(target_env = "msvc"))]
 use tikv_jemallocator::Jemalloc;
 use tokio::join;
 use tower_http::{compression::CompressionLayer, trace::TraceLayer};
-use sha3::{Digest, Keccak256};
 use tracing_subscriber::prelude::*;
 
 #[cfg(not(target_env = "msvc"))]
@@ -218,18 +218,27 @@ async fn get_avl_proof(
     State(state): State<Arc<AppState>>,
 ) -> impl IntoResponse {
     let mut hasher = Keccak256::new();
-    hasher.update([message_id.to_be_bytes_vec(), U256::from(5).to_be_bytes_vec()].concat());
+    hasher.update(
+        [
+            message_id.to_be_bytes_vec(),
+            U256::from(5).to_be_bytes_vec(),
+        ]
+        .concat(),
+    );
     let result = hasher.finalize();
     let proof: Result<AccountStorageProofResponse, jsonrpsee::core::Error> = state
-            .ethereum_client
-            .request(
-                "eth_getProof",
-                rpc_params!["0x8F8d47bF15953E26c622F36F3366e43e26B9b78b", [B256::from_slice(&result[..]).to_string()], "finalized"],
-            )
-            .await;
+        .ethereum_client
+        .request(
+            "eth_getProof",
+            rpc_params![
+                "0x8F8d47bF15953E26c622F36F3366e43e26B9b78b",
+                [B256::from_slice(&result[..]).to_string()],
+                "finalized"
+            ],
+        )
+        .await;
     match proof {
-        Ok(mut resp) => 
-            (
+        Ok(mut resp) => (
             StatusCode::OK,
             [("Cache-Control", "public, max-age=31536000")],
             Json(json!(EthProofResponse {
@@ -262,10 +271,16 @@ async fn main() {
 
     let shared_state = Arc::new(AppState {
         avail_client: HttpClientBuilder::default()
-            .build(env::var("AVAIL_CLIENT_URL").unwrap_or("https://goldberg.avail.tools/api".to_owned()))
+            .build(
+                env::var("AVAIL_CLIENT_URL")
+                    .unwrap_or("https://goldberg.avail.tools/api".to_owned()),
+            )
             .unwrap(),
         ethereum_client: HttpClientBuilder::default()
-            .build(env::var("ETHEREUM_CLIENT_URL").unwrap_or("https://ethereum-sepolia.publicnode.com".to_owned()))
+            .build(
+                env::var("ETHEREUM_CLIENT_URL")
+                    .unwrap_or("https://ethereum-sepolia.publicnode.com".to_owned()),
+            )
             .unwrap(),
         succinct_client: Client::builder().brotli(true).build().unwrap(),
         succinct_base_url: env::var("SUCCINCT_URL")
