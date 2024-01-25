@@ -113,7 +113,7 @@ async fn get_eth_proof(
         cloned_state
             .avail_client
             .request(
-                "kate_queryDataProof",
+                "kate_queryDataProofV2",
                 rpc_params![index_struct.index, &block_hash],
             )
             .await
