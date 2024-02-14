@@ -32,6 +32,7 @@ struct AppState {
     ethereum_client: HttpClient,
     succinct_client: Client,
     succinct_base_url: String,
+    beaconcha_url: String,
 }
 
 #[derive(Deserialize)]
@@ -64,6 +65,21 @@ struct StorageProof {
 struct SuccinctAPIResponse {
     data: Option<SuccinctAPIData>,
     success: Option<bool>,
+}
+
+#[derive(Deserialize)]
+struct BeaconAPIResponse {
+    status: String,
+    data: BeaconAPIResponseData,
+}
+
+#[derive(Deserialize, Serialize, Debug)]
+struct BeaconAPIResponseData {
+    blockroot: B256,
+    exec_block_number: u32,
+    epoch: u32,
+    slot: u32,
+    exec_state_root: B256,
 }
 
 #[derive(Deserialize)]
@@ -221,7 +237,7 @@ async fn get_avl_proof(
     hasher.update(
         [
             message_id.to_be_bytes_vec(),
-            U256::from(5).to_be_bytes_vec(),
+            U256::from(1).to_be_bytes_vec(),
         ]
         .concat(),
     );
@@ -246,6 +262,62 @@ async fn get_avl_proof(
                 storage_proof: resp.storage_proof.swap_remove(0).proof,
             })),
         ),
+        Err(err) => {
+            tracing::error!("❌ {:?}", err);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                [("Cache-Control", "max-age=300, must-revalidate")],
+                Json(json!({ "error": err.to_string()})),
+            )
+        }
+    }
+}
+
+/// Creates a request to the beaconcha service for mapping slot to the block number.
+#[inline(always)]
+async fn get_beacon_slot(
+    Path(slot): Path<U256>,
+    State(state): State<Arc<AppState>>,
+) -> impl IntoResponse {
+    let resp = state
+        .succinct_client
+        .get(format!("{}{}", state.beaconcha_url, slot))
+        .send()
+        .await;
+
+    match resp {
+        Ok(ok) => {
+            let response_data = ok.json::<BeaconAPIResponse>().await;
+            match response_data {
+                Ok(rsp_data) => {
+                    if rsp_data.status == "OK" {
+                        tracing::info!("{:?}", rsp_data.data);
+                        (
+                            StatusCode::OK,
+                            [("Cache-Control", "public, max-age=31536000")],
+                            Json(json!({
+                                "blockNumber": rsp_data.data.exec_block_number
+                            })),
+                        )
+                    } else {
+                        tracing::error!("❌ {:?}", rsp_data.status);
+                        (
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            [("Cache-Control", "max-age=300, must-revalidate")],
+                            Json(json!({ "error": "Cannot fetch slot data"})),
+                        )
+                    }
+                }
+                Err(err) => {
+                    tracing::error!("❌ {:?}", err);
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        [("Cache-Control", "max-age=300, must-revalidate")],
+                        Json(json!({ "error": err.to_string()})),
+                    )
+                }
+            }
+        }
         Err(err) => {
             tracing::error!("❌ {:?}", err);
             (
@@ -285,12 +357,15 @@ async fn main() {
         succinct_client: Client::builder().brotli(true).build().unwrap(),
         succinct_base_url: env::var("SUCCINCT_URL")
             .unwrap_or("https://beaconapi.succinct.xyz/api/integrations/vectorx/".to_owned()),
+        beaconcha_url: env::var("BEACONCHA_URL")
+            .unwrap_or("https://sepolia.beaconcha.in/api/v1/slot/".to_owned()),
     });
 
     let app = Router::new()
         .route("/", get(alive))
         .route("/eth/proof/:block_hash", get(get_eth_proof))
         .route("/avl/proof/:message_id", get(get_avl_proof))
+        .route("/beacon/slot/:slot_number", get(get_beacon_slot))
         .layer(TraceLayer::new_for_http())
         .layer(CompressionLayer::new())
         .with_state(shared_state);
