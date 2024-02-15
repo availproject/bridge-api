@@ -30,9 +30,9 @@ static GLOBAL: Jemalloc = Jemalloc;
 struct AppState {
     avail_client: HttpClient,
     ethereum_client: HttpClient,
-    succinct_client: Client,
+    request_client: Client,
     succinct_base_url: String,
-    beaconcha_url: String,
+    beaconchain_base_url: String,
 }
 
 #[derive(Deserialize)]
@@ -73,7 +73,7 @@ struct BeaconAPIResponse {
     data: BeaconAPIResponseData,
 }
 
-#[derive(Deserialize, Serialize, Debug)]
+#[derive(Deserialize, Serialize)]
 struct BeaconAPIResponseData {
     blockroot: B256,
     exec_block_number: u32,
@@ -136,7 +136,7 @@ async fn get_eth_proof(
     });
     let succinct_response_fut = tokio::spawn(async move {
         let succinct_response = state
-            .succinct_client
+            .request_client
             .get(format!("{}{}", state.succinct_base_url, block_hash))
             .send()
             .await;
@@ -280,8 +280,8 @@ async fn get_beacon_slot(
     State(state): State<Arc<AppState>>,
 ) -> impl IntoResponse {
     let resp = state
-        .succinct_client
-        .get(format!("{}{}", state.beaconcha_url, slot))
+        .request_client
+        .get(format!("{}{}", state.beaconchain_base_url, slot))
         .send()
         .await;
 
@@ -291,7 +291,6 @@ async fn get_beacon_slot(
             match response_data {
                 Ok(rsp_data) => {
                     if rsp_data.status == "OK" {
-                        tracing::info!("{:?}", rsp_data.data);
                         (
                             StatusCode::OK,
                             [("Cache-Control", "public, max-age=31536000")],
@@ -354,10 +353,10 @@ async fn main() {
                     .unwrap_or("https://ethereum-sepolia.publicnode.com".to_owned()),
             )
             .unwrap(),
-        succinct_client: Client::builder().brotli(true).build().unwrap(),
+        request_client: Client::builder().brotli(true).build().unwrap(),
         succinct_base_url: env::var("SUCCINCT_URL")
             .unwrap_or("https://beaconapi.succinct.xyz/api/integrations/vectorx/".to_owned()),
-        beaconcha_url: env::var("BEACONCHA_URL")
+        beaconchain_base_url: env::var("BEACONCHAIN_URL")
             .unwrap_or("https://sepolia.beaconcha.in/api/v1/slot/".to_owned()),
     });
 
