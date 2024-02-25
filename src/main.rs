@@ -42,11 +42,19 @@ struct IndexStruct {
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct DataProofResponse {
-    leaf: B256,
-    leaf_index: u32,
+struct KateQueryDataProofV2Response {
+    data_proof: DataProof,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DataProof {
+    data_root: B256,
+    blob_root: B256,
+    bridge_root: B256,
     proof: Vec<B256>,
-    root: B256,
+    leaf_index: u32,
+    leaf: B256,
 }
 
 #[derive(Deserialize)]
@@ -89,7 +97,6 @@ struct SuccinctAPIData {
     data_commitment: B256,
     merkle_branch: Vec<B256>,
     index: u8,
-    block_number: usize,
 }
 
 #[derive(Serialize)]
@@ -102,9 +109,10 @@ struct AggregatedResponse {
     leaf: B256,
     leaf_index: u32,
     data_root: B256,
+    blob_root: B256,
+    bridge_root: B256,
     data_root_commitment: B256,
     block_hash: B256,
-    block_number: usize,
 }
 
 #[derive(Serialize)]
@@ -146,7 +154,7 @@ async fn get_eth_proof(
         }
     });
     let (data_proof, succinct_response) = join!(data_proof_response_fut, succinct_response_fut);
-    let data_proof: DataProofResponse = match data_proof {
+    let data_proof_res: KateQueryDataProofV2Response = match data_proof {
         Ok(resp) => match resp {
             Ok(data) => data,
             Err(err) => {
@@ -215,15 +223,16 @@ async fn get_eth_proof(
         [("Cache-Control", "public, max-age=31536000")],
         Json(json!(AggregatedResponse {
             data_root_proof: succinct_data.merkle_branch,
-            leaf_proof: data_proof.proof,
+            leaf_proof: data_proof_res.data_proof.proof,
             range_hash: succinct_data.range_hash,
             data_root_index: succinct_data.index,
-            leaf: data_proof.leaf,
-            leaf_index: data_proof.leaf_index,
-            data_root: data_proof.root,
+            leaf: data_proof_res.data_proof.leaf,
+            leaf_index: data_proof_res.data_proof.leaf_index,
+            data_root: data_proof_res.data_proof.data_root,
+            blob_root: data_proof_res.data_proof.blob_root,
+            bridge_root: data_proof_res.data_proof.bridge_root,
             data_root_commitment: succinct_data.data_commitment,
             block_hash,
-            block_number: succinct_data.block_number,
         })),
     )
 }
@@ -358,6 +367,7 @@ async fn main() {
             .unwrap_or("https://beaconapi.succinct.xyz/api/integrations/vectorx/".to_owned()),
         beaconchain_base_url: env::var("BEACONCHAIN_URL")
             .unwrap_or("https://sepolia.beaconcha.in/api/v1/slot/".to_owned()),
+            .unwrap_or("https://beaconapi.succinct.xyz/api/integrations/vectorx?chainName=goldberg&contractChainId=11155111&contractAddress=0x169e50f09A50F3509777cEf63EC59Eeb2aAcd201&blockHash=".to_owned()),
     });
 
     let app = Router::new()
