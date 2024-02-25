@@ -364,10 +364,9 @@ async fn main() {
             .unwrap(),
         request_client: Client::builder().brotli(true).build().unwrap(),
         succinct_base_url: env::var("SUCCINCT_URL")
-            .unwrap_or("https://beaconapi.succinct.xyz/api/integrations/vectorx/".to_owned()),
+            .unwrap_or("https://beaconapi.succinct.xyz/api/integrations/vectorx?chainName=goldberg&contractChainId=11155111&contractAddress=0x169e50f09A50F3509777cEf63EC59Eeb2aAcd201&blockHash=".to_owned()),
         beaconchain_base_url: env::var("BEACONCHAIN_URL")
             .unwrap_or("https://sepolia.beaconcha.in/api/v1/slot/".to_owned()),
-            .unwrap_or("https://beaconapi.succinct.xyz/api/integrations/vectorx?chainName=goldberg&contractChainId=11155111&contractAddress=0x169e50f09A50F3509777cEf63EC59Eeb2aAcd201&blockHash=".to_owned()),
     });
 
     let app = Router::new()
