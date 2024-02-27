@@ -348,8 +348,9 @@ async fn get_beacon_slot(
     }
 }
 
+/// get_eth_head returns Ethereum head with the latest slot/block that is stored and a time.
 #[inline(always)]
-async fn get_head(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+async fn get_eth_head(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let pallet = "Succinct";
     let head = "Head";
     let timestamp = "Timestamps";
@@ -483,8 +484,8 @@ async fn main() {
     let app = Router::new()
         .route("/", get(alive))
         .route("/eth/proof/:block_hash", get(get_eth_proof))
+        .route("/eth/head", get(get_eth_head))
         .route("/avl/proof/:message_id", get(get_avl_proof))
-        .route("/avl/head", get(get_head))
         .route("/beacon/slot/:slot_number", get(get_beacon_slot))
         .layer(TraceLayer::new_for_http())
         .layer(CompressionLayer::new())
