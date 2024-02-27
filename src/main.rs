@@ -12,7 +12,7 @@ use jsonrpsee::{
     http_client::{HttpClient, HttpClientBuilder},
     rpc_params,
 };
-use reqwest::{Client};
+use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha3::{Digest, Keccak256};
@@ -189,12 +189,12 @@ async fn get_eth_proof(
     let succinct_data = match succinct_response {
         Ok(data) => match data {
             Ok(SuccinctAPIResponse {
-                   data: Some(data), ..
-               }) => data,
+                data: Some(data), ..
+            }) => data,
             Ok(SuccinctAPIResponse {
-                   success: Some(false),
-                   ..
-               }) => {
+                success: Some(false),
+                ..
+            }) => {
                 tracing::error!("❌ Succinct API returned unsuccessfully");
                 return (
                     StatusCode::INTERNAL_SERVER_ERROR,
@@ -259,7 +259,7 @@ async fn get_avl_proof(
             message_id.to_be_bytes_vec(),
             U256::from(1).to_be_bytes_vec(),
         ]
-            .concat(),
+        .concat(),
     );
     let result = hasher.finalize();
     let proof: Result<AccountStorageProofResponse, jsonrpsee::core::Error> = state
