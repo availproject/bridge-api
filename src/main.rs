@@ -1,4 +1,4 @@
-use alloy_primitives::{B256, U256};
+use alloy_primitives::{hex, B256, U256};
 use axum::{
     extract::{Json, Path, Query, State},
     http::StatusCode,
@@ -6,15 +6,18 @@ use axum::{
     routing::get,
     Router,
 };
+use jsonrpsee::core::Error;
 use jsonrpsee::{
     core::client::ClientT,
     http_client::{HttpClient, HttpClientBuilder},
     rpc_params,
 };
-use reqwest::Client;
+use reqwest::{Client};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha3::{Digest, Keccak256};
+use sp_core::Decode;
+use sp_io::hashing::twox_128;
 use std::env;
 use std::sync::Arc;
 #[cfg(not(target_env = "msvc"))]
@@ -122,6 +125,14 @@ struct EthProofResponse {
     storage_proof: Vec<String>,
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct HeadResponse {
+    pub slot: u64,
+    pub eth_block_number: u32,
+    pub timestamp: u64,
+}
+
 async fn alive() -> Result<Json<Value>, StatusCode> {
     Ok(Json(json!({ "name": "Avail Bridge API" })))
 }
@@ -178,12 +189,12 @@ async fn get_eth_proof(
     let succinct_data = match succinct_response {
         Ok(data) => match data {
             Ok(SuccinctAPIResponse {
-                data: Some(data), ..
-            }) => data,
+                   data: Some(data), ..
+               }) => data,
             Ok(SuccinctAPIResponse {
-                success: Some(false),
-                ..
-            }) => {
+                   success: Some(false),
+                   ..
+               }) => {
                 tracing::error!("❌ Succinct API returned unsuccessfully");
                 return (
                     StatusCode::INTERNAL_SERVER_ERROR,
@@ -248,7 +259,7 @@ async fn get_avl_proof(
             message_id.to_be_bytes_vec(),
             U256::from(1).to_be_bytes_vec(),
         ]
-        .concat(),
+            .concat(),
     );
     let result = hasher.finalize();
     let proof: Result<AccountStorageProofResponse, jsonrpsee::core::Error> = state
@@ -337,6 +348,106 @@ async fn get_beacon_slot(
     }
 }
 
+#[inline(always)]
+async fn get_head(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    let pallet = "Succinct";
+    let head = "Head";
+    let timestamp = "Timestamps";
+
+    let head_key = format!(
+        "0x{}{}",
+        hex::encode(twox_128(pallet.as_bytes())),
+        hex::encode(twox_128(head.as_bytes()))
+    );
+
+    let head_response: Result<String, Error> = state
+        .avail_client
+        .request("state_getStorage", rpc_params![head_key])
+        .await;
+
+    match head_response {
+        Ok(slot_storage_response) => {
+            let timestamp_key = format!(
+                "0x{}{}{}",
+                hex::encode(twox_128(pallet.as_bytes())),
+                hex::encode(twox_128(timestamp.as_bytes())),
+                &slot_storage_response[2..].to_string()
+            );
+            let timestamp_response: Result<String, Error> = state
+                .avail_client
+                .request("state_getStorage", rpc_params![timestamp_key])
+                .await;
+            match timestamp_response {
+                Ok(timestamp_storage_response) => {
+                    // decode response from storage into readable values
+                    let slot_from_hex =
+                        sp_core::bytes::from_hex(slot_storage_response.as_str()).unwrap();
+                    let slot_input = &mut slot_from_hex.as_slice();
+                    let slot: u64 = Decode::decode(slot_input).unwrap();
+                    let timestamp_from_hex =
+                        sp_core::bytes::from_hex(timestamp_storage_response.as_str()).unwrap();
+                    let timestamp_input = &mut timestamp_from_hex.as_slice();
+                    let timestamp: u64 = Decode::decode(timestamp_input).unwrap();
+
+                    let resp = state
+                        .request_client
+                        .get(format!("{}{}", state.beaconchain_base_url, slot))
+                        .send()
+                        .await;
+
+                    match resp {
+                        Ok(ok) => {
+                            if let Ok(response_data) = ok.json::<BeaconAPIResponse>().await {
+                                (
+                                    StatusCode::OK,
+                                    [("Cache-Control", "public, max-age=31536000")],
+                                    Json(json!(HeadResponse {
+                                        slot,
+                                        timestamp,
+                                        eth_block_number: response_data.data.exec_block_number
+                                    })),
+                                )
+                            } else {
+                                tracing::error!("Cannot get beacon api response.");
+                                (
+                                    StatusCode::INTERNAL_SERVER_ERROR,
+                                    [("Cache-Control", "max-age=300, must-revalidate")],
+                                    Json(json!({ "error": "Cannot get beacon api response"})),
+                                )
+                            }
+                        }
+                        Err(err) => {
+                            tracing::error!("Cannot get beacon api response.");
+                            (
+                                StatusCode::INTERNAL_SERVER_ERROR,
+                                [("Cache-Control", "max-age=300, must-revalidate")],
+                                Json(json!({ "error": err.to_string()})),
+                            )
+                        }
+                    }
+                }
+
+                Err(err) => {
+                    tracing::error!("Cannot get timestamp storage: {:?}", err.to_string());
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        [("Cache-Control", "max-age=300, must-revalidate")],
+                        Json(json!({ "error": err.to_string()})),
+                    )
+                }
+            }
+        }
+        Err(err) => {
+            tracing::error!("Cannot get head storage: {:?}", err.to_string());
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                [("Cache-Control", "max-age=300, must-revalidate")],
+                Json(json!({ "error": err.to_string()})),
+            )
+        }
+    }
+}
+
 #[tokio::main]
 async fn main() {
     dotenvy::dotenv().ok();
@@ -373,6 +484,7 @@ async fn main() {
         .route("/", get(alive))
         .route("/eth/proof/:block_hash", get(get_eth_proof))
         .route("/avl/proof/:message_id", get(get_avl_proof))
+        .route("/avl/head", get(get_head))
         .route("/beacon/slot/:slot_number", get(get_beacon_slot))
         .layer(TraceLayer::new_for_http())
         .layer(CompressionLayer::new())
