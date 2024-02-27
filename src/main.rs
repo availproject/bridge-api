@@ -417,7 +417,7 @@ async fn get_head(State(state): State<Arc<AppState>>) -> impl IntoResponse {
                             }
                         }
                         Err(err) => {
-                            tracing::error!("Cannot get beacon api response.");
+                            tracing::error!("Cannot get beacon api response: {:?}.", err);
                             (
                                 StatusCode::INTERNAL_SERVER_ERROR,
                                 [("Cache-Control", "max-age=300, must-revalidate")],
@@ -428,7 +428,7 @@ async fn get_head(State(state): State<Arc<AppState>>) -> impl IntoResponse {
                 }
 
                 Err(err) => {
-                    tracing::error!("Cannot get timestamp storage: {:?}", err.to_string());
+                    tracing::error!("Cannot get timestamp storage: {:?}", err);
                     (
                         StatusCode::INTERNAL_SERVER_ERROR,
                         [("Cache-Control", "max-age=300, must-revalidate")],
