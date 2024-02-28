@@ -6,6 +6,7 @@ use axum::{
     routing::get,
     Router,
 };
+use chrono::{Duration, TimeDelta, Timelike, Utc};
 use jsonrpsee::core::Error;
 use jsonrpsee::{
     core::client::ClientT,
@@ -135,6 +136,7 @@ struct HeadResponse {
     pub slot: u64,
     pub eth_block_number: u32,
     pub timestamp: u64,
+    pub timestamp_diff: u64,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -419,13 +421,15 @@ async fn get_eth_head(State(state): State<Arc<AppState>>) -> impl IntoResponse {
                     match resp {
                         Ok(ok) => {
                             if let Ok(response_data) = ok.json::<BeaconAPIResponse>().await {
+                                let now = Utc::now().timestamp() as u64;
                                 (
                                     StatusCode::OK,
                                     [("Cache-Control", "public, max-age=31536000")],
                                     Json(json!(HeadResponse {
                                         slot,
                                         timestamp,
-                                        eth_block_number: response_data.data.exec_block_number
+                                        timestamp_diff: (now - timestamp),
+                                        eth_block_number: response_data.data.exec_block_number,
                                     })),
                                 )
                             } else {
