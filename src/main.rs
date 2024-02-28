@@ -36,6 +36,9 @@ struct AppState {
     request_client: Client,
     succinct_base_url: String,
     beaconchain_base_url: String,
+    avail_chain_name: String,
+    contract_chain_id: String,
+    contract_address: String,
 }
 
 #[derive(Deserialize)]
@@ -75,6 +78,7 @@ struct StorageProof {
 #[derive(Deserialize)]
 struct SuccinctAPIResponse {
     data: Option<SuccinctAPIData>,
+    error: Option<String>,
     success: Option<bool>,
 }
 
@@ -133,6 +137,19 @@ struct HeadResponse {
     pub timestamp: u64,
 }
 
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RangeBlocks {
+    start: u32,
+    end: u32,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RangeBlocksAPIResponse {
+    data: RangeBlocks,
+}
+
 async fn alive() -> Result<Json<Value>, StatusCode> {
     Ok(Json(json!({ "name": "Avail Bridge API" })))
 }
@@ -154,11 +171,16 @@ async fn get_eth_proof(
             .await
     });
     let succinct_response_fut = tokio::spawn(async move {
-        let succinct_response = state
-            .request_client
-            .get(format!("{}{}", state.succinct_base_url, block_hash))
-            .send()
-            .await;
+        let url = format!(
+            "{}?chainName={}&contractChainId={}&contractAddress={}&blockHash={}",
+            state.succinct_base_url,
+            state.avail_chain_name,
+            state.contract_chain_id,
+            state.contract_address,
+            block_hash
+        );
+
+        let succinct_response = state.request_client.get(url).send().await;
         match succinct_response {
             Ok(resp) => resp.json::<SuccinctAPIResponse>().await,
             Err(err) => Err(err),
@@ -193,13 +215,14 @@ async fn get_eth_proof(
             }) => data,
             Ok(SuccinctAPIResponse {
                 success: Some(false),
+                error: Some(data),
                 ..
             }) => {
                 tracing::error!("❌ Succinct API returned unsuccessfully");
                 return (
-                    StatusCode::INTERNAL_SERVER_ERROR,
+                    StatusCode::NOT_FOUND,
                     [("Cache-Control", "max-age=300, must-revalidate")],
-                    Json(json!({ "error": "Succinct API returned unsuccessfully" })),
+                    Json(json!({ "error": data })),
                 );
             }
             Err(err) => {
@@ -301,7 +324,7 @@ async fn get_beacon_slot(
 ) -> impl IntoResponse {
     let resp = state
         .request_client
-        .get(format!("{}{}", state.beaconchain_base_url, slot))
+        .get(format!("{}/{}", state.beaconchain_base_url, slot))
         .send()
         .await;
 
@@ -390,11 +413,8 @@ async fn get_eth_head(State(state): State<Arc<AppState>>) -> impl IntoResponse {
                     let timestamp_input = &mut timestamp_from_hex.as_slice();
                     let timestamp: u64 = Decode::decode(timestamp_input).unwrap();
 
-                    let resp = state
-                        .request_client
-                        .get(format!("{}{}", state.beaconchain_base_url, slot))
-                        .send()
-                        .await;
+                    let url = format!("{}/{}", state.beaconchain_base_url, slot);
+                    let resp = state.request_client.get(url).send().await;
 
                     match resp {
                         Ok(ok) => {
@@ -449,6 +469,47 @@ async fn get_eth_head(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     }
 }
 
+/// get_avl_head returns start and end blocks which the contract has commitments
+#[inline(always)]
+async fn get_avl_head(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    let url = format!(
+        "{}/{}/?contractChainId={}&contractAddress={}",
+        state.succinct_base_url,
+        "range".to_string(),
+        state.contract_chain_id,
+        state.contract_address
+    );
+    let response = state.request_client.get(url).send().await;
+    match response {
+        Ok(ok) => {
+            let range_response = ok.json::<RangeBlocksAPIResponse>().await;
+            match range_response {
+                Ok(range_blocks) => (
+                    StatusCode::OK,
+                    [("Cache-Control", "public, max-age=31536000")],
+                    Json(json!(range_blocks)),
+                ),
+                Err(err) => {
+                    tracing::error!("Cannot parse range blocks: {:?}", err.to_string());
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        [("Cache-Control", "max-age=300, must-revalidate")],
+                        Json(json!({ "error": err.to_string()})),
+                    )
+                }
+            }
+        }
+        Err(err) => {
+            tracing::error!("Cannot get avl head: {:?}", err.to_string());
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                [("Cache-Control", "max-age=300, must-revalidate")],
+                Json(json!({ "error": err.to_string()})),
+            )
+        }
+    }
+}
+
 #[tokio::main]
 async fn main() {
     dotenvy::dotenv().ok();
@@ -476,15 +537,20 @@ async fn main() {
             .unwrap(),
         request_client: Client::builder().brotli(true).build().unwrap(),
         succinct_base_url: env::var("SUCCINCT_URL")
-            .unwrap_or("https://beaconapi.succinct.xyz/api/integrations/vectorx?chainName=goldberg&contractChainId=11155111&contractAddress=0x169e50f09A50F3509777cEf63EC59Eeb2aAcd201&blockHash=".to_owned()),
+            .unwrap_or("https://beaconapi.succinct.xyz/api/integrations/vectorx".to_owned()),
         beaconchain_base_url: env::var("BEACONCHAIN_URL")
-            .unwrap_or("https://sepolia.beaconcha.in/api/v1/slot/".to_owned()),
+            .unwrap_or("https://sepolia.beaconcha.in/api/v1/slot".to_owned()),
+        contract_address: env::var("CONTRACT_ADDRESS")
+            .unwrap_or("0x169e50f09A50F3509777cEf63EC59Eeb2aAcd201".to_owned()),
+        contract_chain_id: env::var("CONTRACT_CHAIN_ID").unwrap_or("11155111".to_owned()),
+        avail_chain_name: env::var("AVAIL_CHAIN_NAME").unwrap_or("goldberg".to_owned()),
     });
 
     let app = Router::new()
         .route("/", get(alive))
         .route("/eth/proof/:block_hash", get(get_eth_proof))
         .route("/eth/head", get(get_eth_head))
+        .route("/avl/head", get(get_avl_head))
         .route("/avl/proof/:message_id", get(get_avl_proof))
         .route("/beacon/slot/:slot_number", get(get_beacon_slot))
         .layer(TraceLayer::new_for_http())
