@@ -6,7 +6,7 @@ use axum::{
     routing::get,
     Router,
 };
-use chrono::{Duration, TimeDelta, Timelike, Utc};
+use chrono::{Utc};
 use jsonrpsee::core::Error;
 use jsonrpsee::{
     core::client::ClientT,
@@ -479,7 +479,7 @@ async fn get_avl_head(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let url = format!(
         "{}/{}/?contractChainId={}&contractAddress={}",
         state.succinct_base_url,
-        "range".to_string(),
+        "range",
         state.contract_chain_id,
         state.contract_address
     );
