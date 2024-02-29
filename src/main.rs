@@ -40,6 +40,7 @@ struct AppState {
     avail_chain_name: String,
     contract_chain_id: String,
     contract_address: String,
+    bridge_contract_address: String,
 }
 
 #[derive(Deserialize)]
@@ -291,7 +292,7 @@ async fn get_avl_proof(
         .request(
             "eth_getProof",
             rpc_params![
-                "0x8F8d47bF15953E26c622F36F3366e43e26B9b78b",
+                state.bridge_contract_address.as_str(),
                 [B256::from_slice(&result[..]).to_string()],
                 "finalized"
             ],
@@ -525,6 +526,8 @@ async fn main() {
             .unwrap_or("0x169e50f09A50F3509777cEf63EC59Eeb2aAcd201".to_owned()),
         contract_chain_id: env::var("CONTRACT_CHAIN_ID").unwrap_or("11155111".to_owned()),
         avail_chain_name: env::var("AVAIL_CHAIN_NAME").unwrap_or("goldberg".to_owned()),
+        bridge_contract_address: env::var("BRIDGE_CONTRACT_ADDRESS")
+            .unwrap_or("0x8F8d47bF15953E26c622F36F3366e43e26B9b78b".to_owned()),
     });
 
     let app = Router::new()
