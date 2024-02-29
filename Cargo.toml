@@ -24,6 +24,7 @@ tracing = "0.1.40"
 tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
 sp-io = "32.0.0"
 sp-core = "30.0.0"
+chrono = "0.4.34"
 
 [target.'cfg(not(target_env = "msvc"))'.dependencies]
 tikv-jemallocator = "0.5.4"

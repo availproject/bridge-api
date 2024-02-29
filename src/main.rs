@@ -6,6 +6,7 @@ use axum::{
     routing::get,
     Router,
 };
+use chrono::Utc;
 use jsonrpsee::core::Error;
 use jsonrpsee::{
     core::client::ClientT,
@@ -36,6 +37,10 @@ struct AppState {
     request_client: Client,
     succinct_base_url: String,
     beaconchain_base_url: String,
+    avail_chain_name: String,
+    contract_chain_id: String,
+    contract_address: String,
+    bridge_contract_address: String,
 }
 
 #[derive(Deserialize)]
@@ -75,6 +80,7 @@ struct StorageProof {
 #[derive(Deserialize)]
 struct SuccinctAPIResponse {
     data: Option<SuccinctAPIData>,
+    error: Option<String>,
     success: Option<bool>,
 }
 
@@ -129,8 +135,21 @@ struct EthProofResponse {
 #[serde(rename_all = "camelCase")]
 struct HeadResponse {
     pub slot: u64,
-    pub eth_block_number: u32,
     pub timestamp: u64,
+    pub timestamp_diff: u64,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RangeBlocks {
+    start: u32,
+    end: u32,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RangeBlocksAPIResponse {
+    data: RangeBlocks,
 }
 
 async fn alive() -> Result<Json<Value>, StatusCode> {
@@ -154,11 +173,16 @@ async fn get_eth_proof(
             .await
     });
     let succinct_response_fut = tokio::spawn(async move {
-        let succinct_response = state
-            .request_client
-            .get(format!("{}{}", state.succinct_base_url, block_hash))
-            .send()
-            .await;
+        let url = format!(
+            "{}?chainName={}&contractChainId={}&contractAddress={}&blockHash={}",
+            state.succinct_base_url,
+            state.avail_chain_name,
+            state.contract_chain_id,
+            state.contract_address,
+            block_hash
+        );
+
+        let succinct_response = state.request_client.get(url).send().await;
         match succinct_response {
             Ok(resp) => resp.json::<SuccinctAPIResponse>().await,
             Err(err) => Err(err),
@@ -193,13 +217,14 @@ async fn get_eth_proof(
             }) => data,
             Ok(SuccinctAPIResponse {
                 success: Some(false),
+                error: Some(data),
                 ..
             }) => {
                 tracing::error!("❌ Succinct API returned unsuccessfully");
                 return (
-                    StatusCode::INTERNAL_SERVER_ERROR,
+                    StatusCode::NOT_FOUND,
                     [("Cache-Control", "max-age=300, must-revalidate")],
-                    Json(json!({ "error": "Succinct API returned unsuccessfully" })),
+                    Json(json!({ "error": data })),
                 );
             }
             Err(err) => {
@@ -267,7 +292,7 @@ async fn get_avl_proof(
         .request(
             "eth_getProof",
             rpc_params![
-                "0x8F8d47bF15953E26c622F36F3366e43e26B9b78b",
+                state.bridge_contract_address.as_str(),
                 [B256::from_slice(&result[..]).to_string()],
                 "finalized"
             ],
@@ -301,7 +326,7 @@ async fn get_beacon_slot(
 ) -> impl IntoResponse {
     let resp = state
         .request_client
-        .get(format!("{}{}", state.beaconchain_base_url, slot))
+        .get(format!("{}/{}", state.beaconchain_base_url, slot))
         .send()
         .await;
 
@@ -389,45 +414,17 @@ async fn get_eth_head(State(state): State<Arc<AppState>>) -> impl IntoResponse {
                         sp_core::bytes::from_hex(timestamp_storage_response.as_str()).unwrap();
                     let timestamp_input = &mut timestamp_from_hex.as_slice();
                     let timestamp: u64 = Decode::decode(timestamp_input).unwrap();
-
-                    let resp = state
-                        .request_client
-                        .get(format!("{}{}", state.beaconchain_base_url, slot))
-                        .send()
-                        .await;
-
-                    match resp {
-                        Ok(ok) => {
-                            if let Ok(response_data) = ok.json::<BeaconAPIResponse>().await {
-                                (
-                                    StatusCode::OK,
-                                    [("Cache-Control", "public, max-age=31536000")],
-                                    Json(json!(HeadResponse {
-                                        slot,
-                                        timestamp,
-                                        eth_block_number: response_data.data.exec_block_number
-                                    })),
-                                )
-                            } else {
-                                tracing::error!("Cannot get beacon api response.");
-                                (
-                                    StatusCode::INTERNAL_SERVER_ERROR,
-                                    [("Cache-Control", "max-age=300, must-revalidate")],
-                                    Json(json!({ "error": "Cannot get beacon api response"})),
-                                )
-                            }
-                        }
-                        Err(err) => {
-                            tracing::error!("Cannot get beacon api response: {:?}.", err);
-                            (
-                                StatusCode::INTERNAL_SERVER_ERROR,
-                                [("Cache-Control", "max-age=300, must-revalidate")],
-                                Json(json!({ "error": err.to_string()})),
-                            )
-                        }
-                    }
+                    let now = Utc::now().timestamp() as u64;
+                    (
+                        StatusCode::OK,
+                        [("Cache-Control", "public, max-age=31536000")],
+                        Json(json!(HeadResponse {
+                            slot,
+                            timestamp,
+                            timestamp_diff: (now - timestamp),
+                        })),
+                    )
                 }
-
                 Err(err) => {
                     tracing::error!("Cannot get timestamp storage: {:?}", err);
                     (
@@ -440,6 +437,52 @@ async fn get_eth_head(State(state): State<Arc<AppState>>) -> impl IntoResponse {
         }
         Err(err) => {
             tracing::error!("Cannot get head storage: {:?}", err.to_string());
+            if err.to_string().ends_with("status code: 429") {
+                (
+                    StatusCode::TOO_MANY_REQUESTS,
+                    [("Cache-Control", "max-age=300, must-revalidate")],
+                    Json(json!({ "error": err.to_string()})),
+                )
+            } else {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    [("Cache-Control", "max-age=300, must-revalidate")],
+                    Json(json!({ "error": err.to_string()})),
+                )
+            }
+        }
+    }
+}
+
+/// get_avl_head returns start and end blocks which the contract has commitments
+#[inline(always)]
+async fn get_avl_head(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    let url = format!(
+        "{}/{}/?contractChainId={}&contractAddress={}",
+        state.succinct_base_url, "range", state.contract_chain_id, state.contract_address
+    );
+    let response = state.request_client.get(url).send().await;
+    match response {
+        Ok(ok) => {
+            let range_response = ok.json::<RangeBlocksAPIResponse>().await;
+            match range_response {
+                Ok(range_blocks) => (
+                    StatusCode::OK,
+                    [("Cache-Control", "public, max-age=31536000")],
+                    Json(json!(range_blocks)),
+                ),
+                Err(err) => {
+                    tracing::error!("Cannot parse range blocks: {:?}", err.to_string());
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        [("Cache-Control", "max-age=300, must-revalidate")],
+                        Json(json!({ "error": err.to_string()})),
+                    )
+                }
+            }
+        }
+        Err(err) => {
+            tracing::error!("Cannot get avl head: {:?}", err.to_string());
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 [("Cache-Control", "max-age=300, must-revalidate")],
@@ -476,15 +519,22 @@ async fn main() {
             .unwrap(),
         request_client: Client::builder().brotli(true).build().unwrap(),
         succinct_base_url: env::var("SUCCINCT_URL")
-            .unwrap_or("https://beaconapi.succinct.xyz/api/integrations/vectorx?chainName=goldberg&contractChainId=11155111&contractAddress=0x169e50f09A50F3509777cEf63EC59Eeb2aAcd201&blockHash=".to_owned()),
+            .unwrap_or("https://beaconapi.succinct.xyz/api/integrations/vectorx".to_owned()),
         beaconchain_base_url: env::var("BEACONCHAIN_URL")
-            .unwrap_or("https://sepolia.beaconcha.in/api/v1/slot/".to_owned()),
+            .unwrap_or("https://sepolia.beaconcha.in/api/v1/slot".to_owned()),
+        contract_address: env::var("CONTRACT_ADDRESS")
+            .unwrap_or("0x169e50f09A50F3509777cEf63EC59Eeb2aAcd201".to_owned()),
+        contract_chain_id: env::var("CONTRACT_CHAIN_ID").unwrap_or("11155111".to_owned()),
+        avail_chain_name: env::var("AVAIL_CHAIN_NAME").unwrap_or("goldberg".to_owned()),
+        bridge_contract_address: env::var("BRIDGE_CONTRACT_ADDRESS")
+            .unwrap_or("0x8F8d47bF15953E26c622F36F3366e43e26B9b78b".to_owned()),
     });
 
     let app = Router::new()
         .route("/", get(alive))
         .route("/eth/proof/:block_hash", get(get_eth_proof))
         .route("/eth/head", get(get_eth_head))
+        .route("/avl/head", get(get_avl_head))
         .route("/avl/proof/:message_id", get(get_avl_proof))
         .route("/beacon/slot/:slot_number", get(get_beacon_slot))
         .layer(TraceLayer::new_for_http())
