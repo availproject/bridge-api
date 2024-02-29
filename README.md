@@ -61,7 +61,7 @@ RUSTFLAGS="-C target-cpu=native" cargo run --profile maxperf
         * Response
 
       ```json
-      {"ethBlockNumber":5380696,"slot":4449152,"timestamp":1709124660,"timestampDiff":1396}
+      {"slot":4454752,"timestamp":1709191840,"timestampDiff":1716}
       ```
 
 ### Get current Avail head

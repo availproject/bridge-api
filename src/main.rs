@@ -134,7 +134,6 @@ struct EthProofResponse {
 #[serde(rename_all = "camelCase")]
 struct HeadResponse {
     pub slot: u64,
-    pub eth_block_number: u32,
     pub timestamp: u64,
     pub timestamp_diff: u64,
 }
@@ -414,44 +413,17 @@ async fn get_eth_head(State(state): State<Arc<AppState>>) -> impl IntoResponse {
                         sp_core::bytes::from_hex(timestamp_storage_response.as_str()).unwrap();
                     let timestamp_input = &mut timestamp_from_hex.as_slice();
                     let timestamp: u64 = Decode::decode(timestamp_input).unwrap();
-
-                    let url = format!("{}/{}", state.beaconchain_base_url, slot);
-                    let resp = state.request_client.get(url).send().await;
-
-                    match resp {
-                        Ok(ok) => {
-                            if let Ok(response_data) = ok.json::<BeaconAPIResponse>().await {
-                                let now = Utc::now().timestamp() as u64;
-                                (
-                                    StatusCode::OK,
-                                    [("Cache-Control", "public, max-age=31536000")],
-                                    Json(json!(HeadResponse {
-                                        slot,
-                                        timestamp,
-                                        timestamp_diff: (now - timestamp),
-                                        eth_block_number: response_data.data.exec_block_number,
-                                    })),
-                                )
-                            } else {
-                                tracing::error!("Cannot get beacon api response.");
-                                (
-                                    StatusCode::INTERNAL_SERVER_ERROR,
-                                    [("Cache-Control", "max-age=300, must-revalidate")],
-                                    Json(json!({ "error": "Cannot get beacon api response"})),
-                                )
-                            }
-                        }
-                        Err(err) => {
-                            tracing::error!("Cannot get beacon api response: {:?}.", err);
-                            (
-                                StatusCode::INTERNAL_SERVER_ERROR,
-                                [("Cache-Control", "max-age=300, must-revalidate")],
-                                Json(json!({ "error": err.to_string()})),
-                            )
-                        }
-                    }
+                    let now = Utc::now().timestamp() as u64;
+                    (
+                        StatusCode::OK,
+                        [("Cache-Control", "public, max-age=31536000")],
+                        Json(json!(HeadResponse {
+                            slot,
+                            timestamp,
+                            timestamp_diff: (now - timestamp),
+                        })),
+                    )
                 }
-
                 Err(err) => {
                     tracing::error!("Cannot get timestamp storage: {:?}", err);
                     (
@@ -464,11 +436,19 @@ async fn get_eth_head(State(state): State<Arc<AppState>>) -> impl IntoResponse {
         }
         Err(err) => {
             tracing::error!("Cannot get head storage: {:?}", err.to_string());
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                [("Cache-Control", "max-age=300, must-revalidate")],
-                Json(json!({ "error": err.to_string()})),
-            )
+            if err.to_string().ends_with("status code: 429") {
+                (
+                    StatusCode::TOO_MANY_REQUESTS,
+                    [("Cache-Control", "max-age=300, must-revalidate")],
+                    Json(json!({ "error": err.to_string()})),
+                )
+            } else {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    [("Cache-Control", "max-age=300, must-revalidate")],
+                    Json(json!({ "error": err.to_string()})),
+                )
+            }
         }
     }
 }
