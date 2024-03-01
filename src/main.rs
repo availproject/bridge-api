@@ -97,6 +97,14 @@ struct BeaconAPIResponseData {
     epoch: u32,
     slot: u32,
     exec_state_root: B256,
+    exec_block_hash: B256,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SlotMappingResponse {
+    block_hash: B256,
+    block_number: u32,
 }
 
 #[derive(Deserialize)]
@@ -275,7 +283,7 @@ async fn get_eth_proof(
 
 #[inline(always)]
 async fn get_avl_proof(
-    Path(message_id): Path<U256>,
+    Path((block_hash, message_id)): Path<(B256, U256)>,
     State(state): State<Arc<AppState>>,
 ) -> impl IntoResponse {
     let mut hasher = Keccak256::new();
@@ -294,10 +302,11 @@ async fn get_avl_proof(
             rpc_params![
                 state.bridge_contract_address.as_str(),
                 [B256::from_slice(&result[..]).to_string()],
-                "finalized"
+                block_hash
             ],
         )
         .await;
+
     match proof {
         Ok(mut resp) => (
             StatusCode::OK,
@@ -339,8 +348,9 @@ async fn get_beacon_slot(
                         (
                             StatusCode::OK,
                             [("Cache-Control", "public, max-age=31536000")],
-                            Json(json!({
-                                "blockNumber": rsp_data.data.exec_block_number
+                            Json(json!(SlotMappingResponse {
+                                block_number: rsp_data.data.exec_block_number,
+                                block_hash: rsp_data.data.exec_block_hash
                             })),
                         )
                     } else {
@@ -522,7 +532,7 @@ async fn main() {
             .unwrap_or("https://beaconapi.succinct.xyz/api/integrations/vectorx".to_owned()),
         beaconchain_base_url: env::var("BEACONCHAIN_URL")
             .unwrap_or("https://sepolia.beaconcha.in/api/v1/slot".to_owned()),
-        contract_address: env::var("CONTRACT_ADDRESS")
+        contract_address: env::var("VECTORX_CONTRACT_ADDRESS")
             .unwrap_or("0x169e50f09A50F3509777cEf63EC59Eeb2aAcd201".to_owned()),
         contract_chain_id: env::var("CONTRACT_CHAIN_ID").unwrap_or("11155111".to_owned()),
         avail_chain_name: env::var("AVAIL_CHAIN_NAME").unwrap_or("goldberg".to_owned()),
@@ -535,7 +545,7 @@ async fn main() {
         .route("/eth/proof/:block_hash", get(get_eth_proof))
         .route("/eth/head", get(get_eth_head))
         .route("/avl/head", get(get_avl_head))
-        .route("/avl/proof/:message_id", get(get_avl_proof))
+        .route("/avl/proof/:block_hash/:message_id", get(get_avl_proof))
         .route("/beacon/slot/:slot_number", get(get_beacon_slot))
         .layer(TraceLayer::new_for_http())
         .layer(CompressionLayer::new())
