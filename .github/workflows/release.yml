@@ -1,0 +1,86 @@
+name: Release
+on:
+  push:
+    branches-ignore:
+      - '**'
+    tags-ignore:
+      - 'v*.*.*'
+      - 'v*.*.*-*'
+  release:
+    types:
+      - released
+      - prereleased
+jobs:
+  binary_linux_amd64:
+    runs-on: ubuntu-20.04
+    steps:
+         - uses: actions/checkout@v4
+         - name: Install Cargo Deps And Build Bridge API
+           shell: bash
+           run: |
+            curl https://sh.rustup.rs -sSf | sh -s -- -y
+            source "$HOME/.cargo/env"
+            sudo apt-get update && sudo apt-get install -y protobuf-compiler pkg-config
+            cargo build --profile maxperf -p bridge-api
+            mv target/maxperf/bridge-api target/maxperf/bridge-api-linux-amd64
+            pushd target/maxperf/
+            tar czf bridge-api-linux-amd64.tar.gz bridge-api-linux-amd64
+            popd
+         - uses: actions/upload-artifact@v4
+           with:
+             name: bridge-api-linux-amd64-binary
+             path: target/maxperf/bridge-api-linux-amd64.tar.gz
+
+  binary_publish:
+    needs: [binary_linux_amd64]
+    runs-on: ubuntu-20.04
+    steps:
+         - uses: actions/download-artifact@v4
+           with:
+             name: bridge-api-linux-amd64-binary
+         - name: Export Tag Var
+           id: prepare
+           run: |
+               TAG=${GITHUB_REF#refs/tags/}
+               echo ::set-output name=tag_name::${TAG}
+         - name: Publish Binaries
+           uses: svenstaro/upload-release-action@v2
+           with:
+             repo_token: ${{ secrets.PAT_TOKEN }}
+             file: /home/runner/work/bridge-api/bridge-api/bridge-api*
+             release_name: ${{ steps.prepare.outputs.tag_name }}
+             tag: ${{ steps.prepare.outputs.tag_name }}
+             overwrite: true
+             file_glob: true
+
+  docker_build_push:
+    runs-on: ubuntu-20.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+      - name: Set up Docker Buildx
+        id: buildx
+        uses: docker/setup-buildx-action@v3
+      - name: Export Tag Var
+        id: prepare
+        run: |
+            TAG=${GITHUB_REF#refs/tags/}
+            echo ::set-output name=tag_name::${TAG}
+      - name: Login to Dockerhub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - name: Build and push images
+        uses: docker/build-push-action@v5
+        with:
+          builder: ${{ steps.buildx.outputs.name }}
+          context: .
+          file: ./Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: availj/bridge-api:${{ steps.prepare.outputs.tag_name }}
+          build-args: |
+            BUILD_PROFILE=release
