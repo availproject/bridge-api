@@ -25,6 +25,9 @@ tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
 sp-io = "32.0.0"
 sp-core = "30.0.0"
 chrono = "0.4.34"
+avail-core = { version = "0.5", git = "https://github.com/availproject/avail-core", branch = "main" }
+
+
 
 [target.'cfg(not(target_env = "msvc"))'.dependencies]
 tikv-jemallocator = "0.5.4"

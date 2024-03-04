@@ -1,4 +1,5 @@
 use alloy_primitives::{hex, B256, U256};
+use avail_core::data_proof_v2::Message;
 use axum::{
     extract::{Json, Path, Query, State},
     http::StatusCode,
@@ -52,6 +53,7 @@ struct IndexStruct {
 #[serde(rename_all = "camelCase")]
 struct KateQueryDataProofV2Response {
     data_proof: DataProof,
+    message: Option<Message>,
 }
 
 #[derive(Deserialize)]
@@ -122,6 +124,7 @@ struct AggregatedResponse {
     bridge_root: B256,
     data_root_commitment: B256,
     block_hash: B256,
+    message: Option<Message>,
 }
 
 #[derive(Serialize)]
@@ -268,7 +271,8 @@ async fn get_eth_proof(
             blob_root: data_proof_res.data_proof.blob_root,
             bridge_root: data_proof_res.data_proof.bridge_root,
             data_root_commitment: succinct_data.data_commitment,
-            block_hash,
+            block_hash: block_hash,
+            message: data_proof_res.message
         })),
     )
 }
