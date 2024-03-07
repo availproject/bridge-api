@@ -390,7 +390,7 @@ async fn get_beacon_slot(
 /// get_eth_head returns Ethereum head with the latest slot/block that is stored and a time.
 #[inline(always)]
 async fn get_eth_head(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    let pallet = "Succinct";
+    let pallet = "Vector";
     let head = "Head";
     let timestamp = "Timestamps";
 
@@ -399,7 +399,6 @@ async fn get_eth_head(State(state): State<Arc<AppState>>) -> impl IntoResponse {
         hex::encode(twox_128(pallet.as_bytes())),
         hex::encode(twox_128(head.as_bytes()))
     );
-
     let head_response: Result<String, Error> = state
         .avail_client
         .request("state_getStorage", rpc_params![head_key])
