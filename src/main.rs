@@ -53,6 +53,7 @@ struct IndexStruct {
 #[serde(rename_all = "camelCase")]
 struct KateQueryDataProofV2Response {
     data_proof: DataProof,
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
     message: Option<Message>,
 }
 
@@ -204,7 +205,7 @@ async fn get_eth_proof(
         Ok(resp) => match resp {
             Ok(data) => data,
             Err(err) => {
-                tracing::error!("❌ {:?}", err);
+                tracing::error!("❌ Cannot query data proof {:?}", err);
                 return (
                     StatusCode::BAD_REQUEST,
                     [("Cache-Control", "max-age=300, must-revalidate")],
@@ -279,7 +280,7 @@ async fn get_eth_proof(
             blob_root: data_proof_res.data_proof.blob_root,
             bridge_root: data_proof_res.data_proof.bridge_root,
             data_root_commitment: succinct_data.data_commitment,
-            block_hash: block_hash,
+            block_hash,
             message: data_proof_res.message
         })),
     )
@@ -510,7 +511,7 @@ async fn get_avl_head(State(state): State<Arc<AppState>>) -> impl IntoResponse {
 async fn main() {
     dotenvy::dotenv().ok();
     tracing_subscriber::registry()
-        .with(tracing_subscriber::fmt::layer())
+        .with(tracing_subscriber::fmt::layer().json())
         .with(
             tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
                 "bridge_api=debug,tower_http=debug,axum::rejection=trace".into()
