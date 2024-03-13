@@ -21,7 +21,7 @@ sha3 = "0.10.8"
 tokio = { version = "1.35.1", features = ["macros", "rt-multi-thread", "parking_lot"] }
 tower-http = { version = "0.5.0", features = ["trace", "compression-br"] }
 tracing = "0.1.40"
-tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
+tracing-subscriber = { version = "0.3.18", features = ["env-filter", "json"] }
 sp-io = "32.0.0"
 sp-core = "30.0.0"
 chrono = "0.4.34"
