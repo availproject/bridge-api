@@ -53,6 +53,7 @@ struct IndexStruct {
 #[serde(rename_all = "camelCase")]
 struct KateQueryDataProofResponse {
     data_proof: DataProof,
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
     message: Option<AddressedMessage>,
 }
 
@@ -285,7 +286,7 @@ async fn get_eth_proof(
             blob_root: data_proof_res.data_proof.roots.blob_root,
             bridge_root: data_proof_res.data_proof.roots.bridge_root,
             data_root_commitment: succinct_data.data_commitment,
-            block_hash: block_hash,
+            block_hash,
             message: data_proof_res.message
         })),
     )
@@ -518,7 +519,7 @@ async fn get_avl_head(State(state): State<Arc<AppState>>) -> impl IntoResponse {
 async fn main() {
     dotenvy::dotenv().ok();
     tracing_subscriber::registry()
-        .with(tracing_subscriber::fmt::layer())
+        .with(tracing_subscriber::fmt::layer().json())
         .with(
             tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
                 "bridge_api=debug,tower_http=debug,axum::rejection=trace".into()
