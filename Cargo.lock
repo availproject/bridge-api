@@ -593,12 +593,13 @@ checksum = "d468802bab17cbc0cc575e9b053f41e72aa36bfa6b7f55e3529ffa43161b97fa"
 
 [[package]]
 name = "avail-core"
-version = "0.5.1"
-source = "git+https://github.com/availproject/avail-core?branch=main#861f35a79a6c278bfe68b34d1a1d2794f7734f47"
+version = "0.6.0"
+source = "git+https://github.com/availproject/avail-core?branch=main#4b9888bd46bef404fe9b256c00811fcfcbf6d787"
 dependencies = [
  "binary-merkle-tree",
+ "bounded-collections",
  "derive_more",
- "ethabi",
+ "ethabi-decode",
  "frame-support",
  "hash256-std-hasher",
  "hex",
@@ -1547,14 +1548,23 @@ dependencies = [
 ]
 
 [[package]]
-name = "ethabi"
-version = "18.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7413c5f74cc903ea37386a8965a936cbeb334bd270862fdece542c1b2dcbc898"
+name = "ethabi-decode"
+version = "1.0.0"
+source = "git+https://github.com/Snowfork/ethabi-decode.git?branch=master#5c01c8a0f2d0e4eccf600507cd573b27555b1d9d"
 dependencies = [
  "ethereum-types",
- "hex",
- "sha3",
+ "tiny-keccak",
+]
+
+[[package]]
+name = "ethbloom"
+version = "0.13.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c22d4b5885b6aa2fe5e8b9329fb8d232bf739e434e6b87347c63bdd00c120f60"
+dependencies = [
+ "crunchy",
+ "fixed-hash",
+ "tiny-keccak",
 ]
 
 [[package]]
@@ -1563,6 +1573,7 @@ version = "0.14.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "02d215cbf040552efcbe99a38372fe80ab9d00268e20012b79fcd0f073edd8ee"
 dependencies = [
+ "ethbloom",
  "fixed-hash",
  "primitive-types",
  "uint",

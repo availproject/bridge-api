@@ -1,5 +1,5 @@
 use alloy_primitives::{hex, B256, U256};
-use avail_core::data_proof_v2::Message;
+use avail_core::data_proof::AddressedMessage;
 use axum::{
     extract::{Json, Path, Query, State},
     http::StatusCode,
@@ -49,23 +49,29 @@ struct IndexStruct {
     index: u32,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize, Debug)]
 #[serde(rename_all = "camelCase")]
-struct KateQueryDataProofV2Response {
+struct KateQueryDataProofResponse {
     data_proof: DataProof,
     #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
-    message: Option<Message>,
+    message: Option<AddressedMessage>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize, Debug)]
 #[serde(rename_all = "camelCase")]
 struct DataProof {
-    data_root: B256,
-    blob_root: B256,
-    bridge_root: B256,
+    roots: Roots,
     proof: Vec<B256>,
     leaf_index: u32,
     leaf: B256,
+}
+
+#[derive(Deserialize, Serialize, Debug)]
+#[serde(rename_all = "camelCase")]
+struct Roots {
+    data_root: B256,
+    blob_root: B256,
+    bridge_root: B256,
 }
 
 #[derive(Deserialize)]
@@ -133,7 +139,7 @@ struct AggregatedResponse {
     bridge_root: B256,
     data_root_commitment: B256,
     block_hash: B256,
-    message: Option<Message>,
+    message: Option<AddressedMessage>,
 }
 
 #[derive(Serialize)]
@@ -179,7 +185,7 @@ async fn get_eth_proof(
         cloned_state
             .avail_client
             .request(
-                "kate_queryDataProofV2",
+                "kate_queryDataProof",
                 rpc_params![index_struct.index, &block_hash],
             )
             .await
@@ -201,11 +207,11 @@ async fn get_eth_proof(
         }
     });
     let (data_proof, succinct_response) = join!(data_proof_response_fut, succinct_response_fut);
-    let data_proof_res: KateQueryDataProofV2Response = match data_proof {
+    let data_proof_res: KateQueryDataProofResponse = match data_proof {
         Ok(resp) => match resp {
             Ok(data) => data,
             Err(err) => {
-                tracing::error!("❌ Cannot query data proof {:?}", err);
+                tracing::error!("❌ Cannot get kate data proof response: {:?}", err);
                 return (
                     StatusCode::BAD_REQUEST,
                     [("Cache-Control", "max-age=300, must-revalidate")],
@@ -276,9 +282,9 @@ async fn get_eth_proof(
             data_root_index: succinct_data.index,
             leaf: data_proof_res.data_proof.leaf,
             leaf_index: data_proof_res.data_proof.leaf_index,
-            data_root: data_proof_res.data_proof.data_root,
-            blob_root: data_proof_res.data_proof.blob_root,
-            bridge_root: data_proof_res.data_proof.bridge_root,
+            data_root: data_proof_res.data_proof.roots.data_root,
+            blob_root: data_proof_res.data_proof.roots.blob_root,
+            bridge_root: data_proof_res.data_proof.roots.bridge_root,
             data_root_commitment: succinct_data.data_commitment,
             block_hash,
             message: data_proof_res.message
@@ -322,7 +328,7 @@ async fn get_avl_proof(
             })),
         ),
         Err(err) => {
-            tracing::error!("❌ {:?}", err);
+            tracing::error!("❌ Cannot get account and storage proofs: {:?}", err);
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 [("Cache-Control", "max-age=300, must-revalidate")],
@@ -359,7 +365,10 @@ async fn get_beacon_slot(
                             })),
                         )
                     } else {
-                        tracing::error!("❌ {:?}", rsp_data.status);
+                        tracing::error!(
+                            "❌ Beacon API returned unsuccessfully: {:?}",
+                            rsp_data.status
+                        );
                         (
                             StatusCode::INTERNAL_SERVER_ERROR,
                             [("Cache-Control", "max-age=300, must-revalidate")],
@@ -368,7 +377,7 @@ async fn get_beacon_slot(
                     }
                 }
                 Err(err) => {
-                    tracing::error!("❌ {:?}", err);
+                    tracing::error!("❌ Cannot get beacon API response data: {:?}", err);
                     (
                         StatusCode::INTERNAL_SERVER_ERROR,
                         [("Cache-Control", "max-age=300, must-revalidate")],
@@ -378,7 +387,7 @@ async fn get_beacon_slot(
             }
         }
         Err(err) => {
-            tracing::error!("❌ {:?}", err);
+            tracing::error!("❌ Cannot get beacon API data: {:?}", err);
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 [("Cache-Control", "max-age=300, must-revalidate")],
@@ -391,7 +400,7 @@ async fn get_beacon_slot(
 /// get_eth_head returns Ethereum head with the latest slot/block that is stored and a time.
 #[inline(always)]
 async fn get_eth_head(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    let pallet = "Succinct";
+    let pallet = "Vector";
     let head = "Head";
     let timestamp = "Timestamps";
 
@@ -400,7 +409,6 @@ async fn get_eth_head(State(state): State<Arc<AppState>>) -> impl IntoResponse {
         hex::encode(twox_128(pallet.as_bytes())),
         hex::encode(twox_128(head.as_bytes()))
     );
-
     let head_response: Result<String, Error> = state
         .avail_client
         .request("state_getStorage", rpc_params![head_key])
