@@ -16,7 +16,7 @@ dotenvy = "0.15.7"
 jsonrpsee = { version = "0.20.3", features = ["http-client", "macros", "async-client"] }
 reqwest = { version = "0.11.23", features = ["json", "brotli"] }
 serde = { version = "1.0.193", features = ["derive"] }
-serde_json = "1.0.108"
+serde_json = { version = "1.0.108", features = ["arbitrary_precision"] }
 sha3 = "0.10.8"
 tokio = { version = "1.35.1", features = ["macros", "rt-multi-thread", "parking_lot"] }
 tower-http = { version = "0.5.0", features = ["trace", "compression-br"] }
@@ -25,7 +25,7 @@ tracing-subscriber = { version = "0.3.18", features = ["env-filter", "json"] }
 sp-io = "32.0.0"
 sp-core = "30.0.0"
 chrono = "0.4.34"
-avail-core = { git = "https://github.com/availproject/avail-core", branch = "main" }
+avail-core = { git = "https://github.com/availproject/avail-core", branch = "main"}
 
 
 [target.'cfg(not(target_env = "msvc"))'.dependencies]
