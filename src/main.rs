@@ -175,6 +175,16 @@ async fn alive() -> Result<Json<Value>, StatusCode> {
 }
 
 #[inline(always)]
+async fn info(State(state): State<Arc<AppState>>) -> Result<Json<Value>, StatusCode> {
+    Ok(Json(json!({
+        "vectorXContractAddress": state.contract_address,
+        "vectorXChainId": state.contract_chain_id,
+        "bridgeContractAddress" : state.bridge_contract_address,
+        "availChainName": state.avail_chain_name,
+    })))
+}
+
+#[inline(always)]
 async fn get_eth_proof(
     Path(block_hash): Path<B256>,
     Query(index_struct): Query<IndexStruct>,
@@ -555,6 +565,7 @@ async fn main() {
 
     let app = Router::new()
         .route("/", get(alive))
+        .route("/info", get(info))
         .route("/eth/proof/:block_hash", get(get_eth_proof))
         .route("/eth/head", get(get_eth_head))
         .route("/avl/head", get(get_avl_head))
