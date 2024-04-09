@@ -460,11 +460,19 @@ async fn get_eth_head(State(state): State<Arc<AppState>>) -> impl IntoResponse {
                 }
                 Err(err) => {
                     tracing::error!("❌ Cannot get timestamp storage: {:?}", err);
-                    (
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        [("Cache-Control", "max-age=300, must-revalidate")],
-                        Json(json!({ "error": err.to_string()})),
-                    )
+                    if err.to_string().ends_with("status code: 429") {
+                        (
+                            StatusCode::TOO_MANY_REQUESTS,
+                            [("Cache-Control", "max-age=300, must-revalidate")],
+                            Json(json!({ "error": err.to_string()})),
+                        )
+                    } else {
+                        (
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            [("Cache-Control", "max-age=300, must-revalidate")],
+                            Json(json!({ "error": err.to_string()})),
+                        )
+                    }
                 }
             }
         }
