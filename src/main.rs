@@ -459,7 +459,7 @@ async fn get_eth_head(State(state): State<Arc<AppState>>) -> impl IntoResponse {
                     )
                 }
                 Err(err) => {
-                    tracing::error!("Cannot get timestamp storage: {:?}", err);
+                    tracing::error!("❌ Cannot get timestamp storage: {:?}", err);
                     (
                         StatusCode::INTERNAL_SERVER_ERROR,
                         [("Cache-Control", "max-age=300, must-revalidate")],
@@ -469,7 +469,7 @@ async fn get_eth_head(State(state): State<Arc<AppState>>) -> impl IntoResponse {
             }
         }
         Err(err) => {
-            tracing::error!("Cannot get head storage: {:?}", err.to_string());
+            tracing::error!("❌ Cannot get head storage: {:?}", err.to_string());
             if err.to_string().ends_with("status code: 429") {
                 (
                     StatusCode::TOO_MANY_REQUESTS,
@@ -505,7 +505,7 @@ async fn get_avl_head(State(state): State<Arc<AppState>>) -> impl IntoResponse {
                     Json(json!(range_blocks)),
                 ),
                 Err(err) => {
-                    tracing::error!("Cannot parse range blocks: {:?}", err.to_string());
+                    tracing::error!("❌ Cannot parse range blocks: {:?}", err.to_string());
                     (
                         StatusCode::INTERNAL_SERVER_ERROR,
                         [("Cache-Control", "max-age=300, must-revalidate")],
@@ -515,7 +515,7 @@ async fn get_avl_head(State(state): State<Arc<AppState>>) -> impl IntoResponse {
             }
         }
         Err(err) => {
-            tracing::error!("Cannot get avl head: {:?}", err.to_string());
+            tracing::error!("❌ Cannot get avl head: {:?}", err.to_string());
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 [("Cache-Control", "max-age=300, must-revalidate")],
