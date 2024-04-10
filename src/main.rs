@@ -175,6 +175,16 @@ async fn alive() -> Result<Json<Value>, StatusCode> {
 }
 
 #[inline(always)]
+async fn info(State(state): State<Arc<AppState>>) -> Result<Json<Value>, StatusCode> {
+    Ok(Json(json!({
+        "vectorXContractAddress": state.contract_address,
+        "vectorXChainId": state.contract_chain_id,
+        "bridgeContractAddress" : state.bridge_contract_address,
+        "availChainName": state.avail_chain_name,
+    })))
+}
+
+#[inline(always)]
 async fn get_eth_proof(
     Path(block_hash): Path<B256>,
     Query(index_struct): Query<IndexStruct>,
@@ -449,17 +459,25 @@ async fn get_eth_head(State(state): State<Arc<AppState>>) -> impl IntoResponse {
                     )
                 }
                 Err(err) => {
-                    tracing::error!("Cannot get timestamp storage: {:?}", err);
-                    (
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        [("Cache-Control", "max-age=300, must-revalidate")],
-                        Json(json!({ "error": err.to_string()})),
-                    )
+                    tracing::error!("❌ Cannot get timestamp storage: {:?}", err);
+                    if err.to_string().ends_with("status code: 429") {
+                        (
+                            StatusCode::TOO_MANY_REQUESTS,
+                            [("Cache-Control", "max-age=300, must-revalidate")],
+                            Json(json!({ "error": err.to_string()})),
+                        )
+                    } else {
+                        (
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            [("Cache-Control", "max-age=300, must-revalidate")],
+                            Json(json!({ "error": err.to_string()})),
+                        )
+                    }
                 }
             }
         }
         Err(err) => {
-            tracing::error!("Cannot get head storage: {:?}", err.to_string());
+            tracing::error!("❌ Cannot get head storage: {:?}", err.to_string());
             if err.to_string().ends_with("status code: 429") {
                 (
                     StatusCode::TOO_MANY_REQUESTS,
@@ -495,7 +513,7 @@ async fn get_avl_head(State(state): State<Arc<AppState>>) -> impl IntoResponse {
                     Json(json!(range_blocks)),
                 ),
                 Err(err) => {
-                    tracing::error!("Cannot parse range blocks: {:?}", err.to_string());
+                    tracing::error!("❌ Cannot parse range blocks: {:?}", err.to_string());
                     (
                         StatusCode::INTERNAL_SERVER_ERROR,
                         [("Cache-Control", "max-age=300, must-revalidate")],
@@ -505,7 +523,7 @@ async fn get_avl_head(State(state): State<Arc<AppState>>) -> impl IntoResponse {
             }
         }
         Err(err) => {
-            tracing::error!("Cannot get avl head: {:?}", err.to_string());
+            tracing::error!("❌ Cannot get avl head: {:?}", err.to_string());
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 [("Cache-Control", "max-age=300, must-revalidate")],
@@ -555,6 +573,7 @@ async fn main() {
 
     let app = Router::new()
         .route("/", get(alive))
+        .route("/info", get(info))
         .route("/eth/proof/:block_hash", get(get_eth_proof))
         .route("/eth/head", get(get_eth_head))
         .route("/avl/head", get(get_avl_head))
