@@ -8,6 +8,7 @@ use axum::{
     Router,
 };
 use chrono::Utc;
+use http::Method;
 use jsonrpsee::core::Error;
 use jsonrpsee::{
     core::client::ClientT,
@@ -25,7 +26,7 @@ use std::sync::Arc;
 #[cfg(not(target_env = "msvc"))]
 use tikv_jemallocator::Jemalloc;
 use tokio::join;
-use tower_http::{compression::CompressionLayer, trace::TraceLayer};
+use tower_http::{compression::CompressionLayer, trace::TraceLayer, cors::{CorsLayer, Any}};
 use tracing_subscriber::prelude::*;
 
 #[cfg(not(target_env = "msvc"))]
@@ -557,7 +558,7 @@ async fn main() {
         avail_client: HttpClientBuilder::default()
             .build(
                 env::var("AVAIL_CLIENT_URL")
-                    .unwrap_or("https://goldberg.avail.tools/api".to_owned()),
+                    .unwrap_or("https://avail-turing.public.blastapi.io/api".to_owned()),
             )
             .unwrap(),
         ethereum_client: HttpClientBuilder::default()
@@ -572,11 +573,11 @@ async fn main() {
         beaconchain_base_url: env::var("BEACONCHAIN_URL")
             .unwrap_or("https://sepolia.beaconcha.in/api/v1/slot".to_owned()),
         contract_address: env::var("VECTORX_CONTRACT_ADDRESS")
-            .unwrap_or("0x169e50f09A50F3509777cEf63EC59Eeb2aAcd201".to_owned()),
+            .unwrap_or("0xe542dB219a7e2b29C7AEaEAce242c9a2Cd528F96".to_owned()),
         contract_chain_id: env::var("CONTRACT_CHAIN_ID").unwrap_or("11155111".to_owned()),
-        avail_chain_name: env::var("AVAIL_CHAIN_NAME").unwrap_or("goldberg".to_owned()),
+        avail_chain_name: env::var("AVAIL_CHAIN_NAME").unwrap_or("turing".to_owned()),
         bridge_contract_address: env::var("BRIDGE_CONTRACT_ADDRESS")
-            .unwrap_or("0x8F8d47bF15953E26c622F36F3366e43e26B9b78b".to_owned()),
+            .unwrap_or("0x967F7DdC4ec508462231849AE81eeaa68Ad01389".to_owned()),
     });
 
     let app = Router::new()
@@ -589,6 +590,9 @@ async fn main() {
         .route("/beacon/slot/:slot_number", get(get_beacon_slot))
         .layer(TraceLayer::new_for_http())
         .layer(CompressionLayer::new())
+        .layer(CorsLayer::new()
+        .allow_methods(vec![Method::GET])
+        .allow_origin(Any))
         .with_state(shared_state);
 
     let host = env::var("HOST").unwrap_or("0.0.0.0".to_owned());
