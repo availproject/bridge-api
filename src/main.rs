@@ -26,7 +26,11 @@ use std::sync::Arc;
 #[cfg(not(target_env = "msvc"))]
 use tikv_jemallocator::Jemalloc;
 use tokio::join;
-use tower_http::{compression::CompressionLayer, trace::TraceLayer, cors::{CorsLayer, Any}};
+use tower_http::{
+    compression::CompressionLayer,
+    cors::{Any, CorsLayer},
+    trace::TraceLayer,
+};
 use tracing_subscriber::prelude::*;
 
 #[cfg(not(target_env = "msvc"))]
@@ -50,7 +54,7 @@ struct IndexStruct {
     index: u32,
 }
 
-#[derive(Deserialize, Serialize, Debug)]
+#[derive(Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct KateQueryDataProofResponse {
     data_proof: DataProof,
@@ -58,7 +62,7 @@ struct KateQueryDataProofResponse {
     message: Option<AddressedMessage>,
 }
 
-#[derive(Deserialize, Serialize, Debug)]
+#[derive(Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct DataProof {
     roots: Roots,
@@ -67,7 +71,7 @@ struct DataProof {
     leaf: B256,
 }
 
-#[derive(Deserialize, Serialize, Debug)]
+#[derive(Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct Roots {
     data_root: B256,
@@ -285,7 +289,7 @@ async fn get_eth_proof(
 
     (
         StatusCode::OK,
-        [("Cache-Control", "public, max-age=31536000")],
+        [("Cache-Control", "public, max-age=31536000, immutable")],
         Json(json!(AggregatedResponse {
             data_root_proof: succinct_data.merkle_branch,
             leaf_proof: data_proof_res.data_proof.proof,
@@ -332,7 +336,7 @@ async fn get_avl_proof(
     match proof {
         Ok(mut resp) => (
             StatusCode::OK,
-            [("Cache-Control", "public, max-age=31536000")],
+            [("Cache-Control", "public, max-age=31536000, immutable")],
             Json(json!(EthProofResponse {
                 account_proof: resp.account_proof,
                 storage_proof: resp.storage_proof.swap_remove(0).proof,
@@ -377,7 +381,7 @@ async fn get_beacon_slot(
                     if rsp_data.status == "OK" {
                         (
                             StatusCode::OK,
-                            [("Cache-Control", "public, max-age=31536000")],
+                            [("Cache-Control", "public, max-age=31536000, immutable")],
                             Json(json!(SlotMappingResponse {
                                 block_number: rsp_data.data.exec_block_number,
                                 block_hash: rsp_data.data.exec_block_hash
@@ -459,7 +463,7 @@ async fn get_eth_head(State(state): State<Arc<AppState>>) -> impl IntoResponse {
                     let now = Utc::now().timestamp() as u64;
                     (
                         StatusCode::OK,
-                        [("Cache-Control", "public, max-age=31536000")],
+                        [("Cache-Control", "public, max-age=7200, must-revalidate")],
                         Json(json!(HeadResponse {
                             slot,
                             timestamp,
@@ -518,7 +522,7 @@ async fn get_avl_head(State(state): State<Arc<AppState>>) -> impl IntoResponse {
             match range_response {
                 Ok(range_blocks) => (
                     StatusCode::OK,
-                    [("Cache-Control", "public, max-age=31536000")],
+                    [("Cache-Control", "public, max-age=900, must-revalidate")],
                     Json(json!(range_blocks)),
                 ),
                 Err(err) => {
@@ -590,9 +594,11 @@ async fn main() {
         .route("/beacon/slot/:slot_number", get(get_beacon_slot))
         .layer(TraceLayer::new_for_http())
         .layer(CompressionLayer::new())
-        .layer(CorsLayer::new()
-        .allow_methods(vec![Method::GET])
-        .allow_origin(Any))
+        .layer(
+            CorsLayer::new()
+                .allow_methods(vec![Method::GET])
+                .allow_origin(Any),
+        )
         .with_state(shared_state);
 
     let host = env::var("HOST").unwrap_or("0.0.0.0".to_owned());
