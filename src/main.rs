@@ -127,7 +127,7 @@ struct SuccinctAPIData {
     range_hash: B256,
     data_commitment: B256,
     merkle_branch: Vec<B256>,
-    index: u8,
+    index: u16,
 }
 
 #[derive(Serialize)]
@@ -136,7 +136,7 @@ struct AggregatedResponse {
     data_root_proof: Vec<B256>,
     leaf_proof: Vec<B256>,
     range_hash: B256,
-    data_root_index: u8,
+    data_root_index: u16,
     leaf: B256,
     leaf_index: u32,
     data_root: B256,
