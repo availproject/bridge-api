@@ -432,47 +432,79 @@ async fn get_eth_head(State(state): State<Arc<AppState>>) -> impl IntoResponse {
         hex::encode(twox_128(pallet.as_bytes())),
         hex::encode(twox_128(head.as_bytes()))
     );
-    let head_response: Result<String, Error> = state
+
+    let finalized_block_hash_response: Result<String, Error> = state
         .avail_client
-        .request("state_getStorage", rpc_params![head_key])
+        .request("chain_getFinalizedHead", rpc_params![])
         .await;
 
-    match head_response {
-        Ok(slot_storage_response) => {
-            let timestamp_key = format!(
-                "0x{}{}{}",
-                hex::encode(twox_128(pallet.as_bytes())),
-                hex::encode(twox_128(timestamp.as_bytes())),
-                &slot_storage_response[2..].to_string()
-            );
-            let timestamp_response: Result<String, Error> = state
+    match finalized_block_hash_response {
+        Ok(finalized_block_hash) => {
+            let head_response: Result<String, Error> = state
                 .avail_client
-                .request("state_getStorage", rpc_params![timestamp_key])
+                .request(
+                    "state_getStorage",
+                    rpc_params![head_key, finalized_block_hash.clone()],
+                )
                 .await;
-            match timestamp_response {
-                Ok(timestamp_storage_response) => {
-                    // decode response from storage into readable values
-                    let slot_from_hex =
-                        sp_core::bytes::from_hex(slot_storage_response.as_str()).unwrap();
-                    let slot_input = &mut slot_from_hex.as_slice();
-                    let slot: u64 = Decode::decode(slot_input).unwrap();
-                    let timestamp_from_hex =
-                        sp_core::bytes::from_hex(timestamp_storage_response.as_str()).unwrap();
-                    let timestamp_input = &mut timestamp_from_hex.as_slice();
-                    let timestamp: u64 = Decode::decode(timestamp_input).unwrap();
-                    let now = Utc::now().timestamp() as u64;
-                    (
-                        StatusCode::OK,
-                        [("Cache-Control", "public, max-age=7200, must-revalidate")],
-                        Json(json!(HeadResponse {
-                            slot,
-                            timestamp,
-                            timestamp_diff: (now - timestamp),
-                        })),
-                    )
+            match head_response {
+                Ok(slot_storage_response) => {
+                    let timestamp_key = format!(
+                        "0x{}{}{}",
+                        hex::encode(twox_128(pallet.as_bytes())),
+                        hex::encode(twox_128(timestamp.as_bytes())),
+                        &slot_storage_response[2..].to_string()
+                    );
+                    let timestamp_response: Result<String, Error> = state
+                        .avail_client
+                        .request(
+                            "state_getStorage",
+                            rpc_params![timestamp_key, finalized_block_hash.clone()],
+                        )
+                        .await;
+                    match timestamp_response {
+                        Ok(timestamp_storage_response) => {
+                            // decode response from storage into readable values
+                            let slot_from_hex =
+                                sp_core::bytes::from_hex(slot_storage_response.as_str()).unwrap();
+                            let slot_input = &mut slot_from_hex.as_slice();
+                            let slot: u64 = Decode::decode(slot_input).unwrap();
+                            let timestamp_from_hex =
+                                sp_core::bytes::from_hex(timestamp_storage_response.as_str())
+                                    .unwrap();
+                            let timestamp_input = &mut timestamp_from_hex.as_slice();
+                            let timestamp: u64 = Decode::decode(timestamp_input).unwrap();
+                            let now = Utc::now().timestamp() as u64;
+                            (
+                                StatusCode::OK,
+                                [("Cache-Control", "public, max-age=7200, must-revalidate")],
+                                Json(json!(HeadResponse {
+                                    slot,
+                                    timestamp,
+                                    timestamp_diff: (now - timestamp),
+                                })),
+                            )
+                        }
+                        Err(err) => {
+                            tracing::error!("❌ Cannot get timestamp storage: {:?}", err);
+                            if err.to_string().ends_with("status code: 429") {
+                                (
+                                    StatusCode::TOO_MANY_REQUESTS,
+                                    [("Cache-Control", "max-age=300, must-revalidate")],
+                                    Json(json!({ "error": err.to_string()})),
+                                )
+                            } else {
+                                (
+                                    StatusCode::INTERNAL_SERVER_ERROR,
+                                    [("Cache-Control", "max-age=300, must-revalidate")],
+                                    Json(json!({ "error": err.to_string()})),
+                                )
+                            }
+                        }
+                    }
                 }
                 Err(err) => {
-                    tracing::error!("❌ Cannot get timestamp storage: {:?}", err);
+                    tracing::error!("❌ Cannot get head storage: {:?}", err.to_string());
                     if err.to_string().ends_with("status code: 429") {
                         (
                             StatusCode::TOO_MANY_REQUESTS,
@@ -490,20 +522,15 @@ async fn get_eth_head(State(state): State<Arc<AppState>>) -> impl IntoResponse {
             }
         }
         Err(err) => {
-            tracing::error!("❌ Cannot get head storage: {:?}", err.to_string());
-            if err.to_string().ends_with("status code: 429") {
-                (
-                    StatusCode::TOO_MANY_REQUESTS,
-                    [("Cache-Control", "max-age=300, must-revalidate")],
-                    Json(json!({ "error": err.to_string()})),
-                )
-            } else {
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    [("Cache-Control", "max-age=300, must-revalidate")],
-                    Json(json!({ "error": err.to_string()})),
-                )
-            }
+            tracing::error!(
+                "Cannot get the latest finalized block hash: {:?}",
+                err.to_string()
+            );
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                [("Cache-Control", "max-age=300, must-revalidate")],
+                Json(json!({ "error": err.to_string()})),
+            )
         }
     }
 }
