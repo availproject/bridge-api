@@ -620,14 +620,21 @@ async fn main() {
         )
         .init();
 
+    let max_concurrent_request: usize = env::var("MAX_CONCURRENT_REQUEST")
+                            .ok()
+                            .and_then(|max_request| max_request.parse::<usize>().ok())
+                            .unwrap_or(256);
+
     let shared_state = Arc::new(AppState {
         avail_client: HttpClientBuilder::default()
+            .max_concurrent_requests(max_concurrent_request)
             .build(
                 env::var("AVAIL_CLIENT_URL")
                     .unwrap_or("https://avail-turing.public.blastapi.io/api".to_owned()),
             )
             .unwrap(),
         ethereum_client: HttpClientBuilder::default()
+            .max_concurrent_requests(max_concurrent_request)
             .build(
                 env::var("ETHEREUM_CLIENT_URL")
                     .unwrap_or("https://ethereum-sepolia.publicnode.com".to_owned()),
