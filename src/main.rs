@@ -1,13 +1,18 @@
 use alloy_primitives::{hex, B256, U256};
 use avail_core::data_proof::AddressedMessage;
 use axum::{
-    extract::{Json, Path, Query, State},
+    extract::{Json, Path, Query, Request, State},
     http::StatusCode,
     response::IntoResponse,
     routing::get,
     Router,
 };
 use chrono::Utc;
+use http_cache_reqwest::CACacheManager;
+use http_cache_reqwest::Cache;
+use http_cache_reqwest::CacheMode;
+use http_cache_reqwest::HttpCache;
+use http_cache_reqwest::HttpCacheOptions;
 use jsonrpsee::core::Error;
 use jsonrpsee::{
     core::client::ClientT,
@@ -15,6 +20,7 @@ use jsonrpsee::{
     rpc_params,
 };
 use reqwest::Client;
+use reqwest_middleware::{ClientBuilder, ClientWithMiddleware, Result as RResult};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha3::{Digest, Keccak256};
@@ -35,7 +41,7 @@ static GLOBAL: Jemalloc = Jemalloc;
 struct AppState {
     avail_client: HttpClient,
     ethereum_client: HttpClient,
-    request_client: Client,
+    request_client: ClientWithMiddleware,
     succinct_base_url: String,
     beaconchain_base_url: String,
     avail_chain_name: String,
@@ -202,8 +208,14 @@ async fn get_eth_proof(
 
         let succinct_response = state.request_client.get(url).send().await;
         match succinct_response {
-            Ok(resp) => resp.json::<SuccinctAPIResponse>().await,
-            Err(err) => Err(err),
+            Ok(resp) => resp
+                .json::<SuccinctAPIResponse>()
+                .await
+                .map_err(|e| e.to_string()),
+            Err(err) => match err {
+                reqwest_middleware::Error::Middleware(e) => Err(e.to_string()),
+                reqwest_middleware::Error::Reqwest(e) => Err(e.to_string()),
+            },
         }
     });
     let (data_proof, succinct_response) = join!(data_proof_response_fut, succinct_response_fut);
@@ -540,7 +552,13 @@ async fn main() {
                     .unwrap_or("https://ethereum-sepolia.publicnode.com".to_owned()),
             )
             .unwrap(),
-        request_client: Client::builder().brotli(true).build().unwrap(),
+        request_client: ClientBuilder::new(Client::new())
+            .with(Cache(HttpCache {
+                mode: CacheMode::Default,
+                manager: CACacheManager::default(),
+                options: HttpCacheOptions::default(),
+            }))
+            .build(),
         succinct_base_url: env::var("SUCCINCT_URL")
             .unwrap_or("https://beaconapi.succinct.xyz/api/integrations/vectorx".to_owned()),
         beaconchain_base_url: env::var("BEACONCHAIN_URL")
