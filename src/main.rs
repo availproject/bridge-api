@@ -212,10 +212,7 @@ async fn get_eth_proof(
                 .json::<SuccinctAPIResponse>()
                 .await
                 .map_err(|e| e.to_string()),
-            Err(err) => match err {
-                reqwest_middleware::Error::Middleware(e) => Err(e.to_string()),
-                reqwest_middleware::Error::Reqwest(e) => Err(e.to_string()),
-            },
+            Err(err) => Err(err.to_string()),
         }
     });
     let (data_proof, succinct_response) = join!(data_proof_response_fut, succinct_response_fut);
