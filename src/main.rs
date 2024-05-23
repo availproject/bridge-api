@@ -621,9 +621,9 @@ async fn main() {
         .init();
 
     let max_concurrent_request: usize = env::var("MAX_CONCURRENT_REQUEST")
-                            .ok()
-                            .and_then(|max_request| max_request.parse::<usize>().ok())
-                            .unwrap_or(256);
+        .ok()
+        .and_then(|max_request| max_request.parse::<usize>().ok())
+        .unwrap_or(256);
 
     let shared_state = Arc::new(AppState {
         avail_client: HttpClientBuilder::default()
