@@ -539,8 +539,8 @@ async fn get_eth_head(State(state): State<Arc<AppState>>) -> impl IntoResponse {
 #[inline(always)]
 async fn get_avl_head(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let url = format!(
-        "{}/{}/?contractChainId={}&contractAddress={}",
-        state.succinct_base_url, "range", state.contract_chain_id, state.contract_address
+        "{}/{}/?chainName={}&contractChainId={}&contractAddress={}",
+        state.succinct_base_url, "range", state.avail_chain_name, state.contract_chain_id, state.contract_address
     );
     let response = state.request_client.get(url).send().await;
     match response {
