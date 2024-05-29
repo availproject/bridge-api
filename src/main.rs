@@ -47,6 +47,8 @@ struct AppState {
     contract_chain_id: String,
     contract_address: String,
     bridge_contract_address: String,
+    eth_head_response_cache: u16,
+    avl_head_response_cache: u16,
 }
 
 #[derive(Deserialize)]
@@ -609,6 +611,14 @@ async fn main() {
         avail_chain_name: env::var("AVAIL_CHAIN_NAME").unwrap_or("turing".to_owned()),
         bridge_contract_address: env::var("BRIDGE_CONTRACT_ADDRESS")
             .unwrap_or("0x967F7DdC4ec508462231849AE81eeaa68Ad01389".to_owned()),
+        eth_head_response_cache: env::var("ETH_HEAD_RESPONSE_CACHE")
+            .ok()
+            .and_then(|max_request| max_request.parse::<u16>().ok())
+            .unwrap_or(240),
+        avl_head_response_cache: env::var("AVL_HEAD_RESPONSE_CACHE")
+            .ok()
+            .and_then(|max_request| max_request.parse::<u16>().ok())
+            .unwrap_or(600),
     });
 
     let app = Router::new()
