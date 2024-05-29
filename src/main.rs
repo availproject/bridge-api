@@ -479,7 +479,13 @@ async fn get_eth_head(State(state): State<Arc<AppState>>) -> impl IntoResponse {
                             let now = Utc::now().timestamp() as u64;
                             (
                                 StatusCode::OK,
-                                [("Cache-Control", "public, max-age=7200, must-revalidate")],
+                                [(
+                                    "Cache-Control",
+                                    format!(
+                                        "public, max-age={}, must-revalidate",
+                                        state.eth_head_response_cache
+                                    ),
+                                )],
                                 Json(json!(HeadResponse {
                                     slot,
                                     timestamp,
@@ -492,13 +498,23 @@ async fn get_eth_head(State(state): State<Arc<AppState>>) -> impl IntoResponse {
                             if err.to_string().ends_with("status code: 429") {
                                 (
                                     StatusCode::TOO_MANY_REQUESTS,
-                                    [("Cache-Control", "max-age=300, must-revalidate")],
+                                    [
+                                        (
+                                            "Cache-Control",
+                                            "max-age=300, must-revalidate".to_string(),
+                                        ),
+                                    ],
                                     Json(json!({ "error": err.to_string()})),
                                 )
                             } else {
                                 (
                                     StatusCode::INTERNAL_SERVER_ERROR,
-                                    [("Cache-Control", "max-age=300, must-revalidate")],
+                                    [
+                                        (
+                                            "Cache-Control",
+                                            "max-age=300, must-revalidate".to_string(),
+                                        ),
+                                    ],
                                     Json(json!({ "error": err.to_string()})),
                                 )
                             }
@@ -510,13 +526,13 @@ async fn get_eth_head(State(state): State<Arc<AppState>>) -> impl IntoResponse {
                     if err.to_string().ends_with("status code: 429") {
                         (
                             StatusCode::TOO_MANY_REQUESTS,
-                            [("Cache-Control", "max-age=300, must-revalidate")],
+                            [("Cache-Control", "max-age=300, must-revalidate".to_string())],
                             Json(json!({ "error": err.to_string()})),
                         )
                     } else {
                         (
                             StatusCode::INTERNAL_SERVER_ERROR,
-                            [("Cache-Control", "max-age=300, must-revalidate")],
+                            [("Cache-Control", "max-age=300, must-revalidate".to_string())],
                             Json(json!({ "error": err.to_string()})),
                         )
                     }
@@ -530,7 +546,7 @@ async fn get_eth_head(State(state): State<Arc<AppState>>) -> impl IntoResponse {
             );
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                [("Cache-Control", "max-age=300, must-revalidate")],
+                [("Cache-Control", "max-age=300, must-revalidate".to_string())],
                 Json(json!({ "error": err.to_string()})),
             )
         }
@@ -551,14 +567,20 @@ async fn get_avl_head(State(state): State<Arc<AppState>>) -> impl IntoResponse {
             match range_response {
                 Ok(range_blocks) => (
                     StatusCode::OK,
-                    [("Cache-Control", "public, max-age=900, must-revalidate")],
+                    [(
+                        "Cache-Control",
+                        format!(
+                            "public, max-age={}, must-revalidate",
+                            state.avl_head_response_cache
+                        ),
+                    )],
                     Json(json!(range_blocks)),
                 ),
                 Err(err) => {
                     tracing::error!("❌ Cannot parse range blocks: {:?}", err.to_string());
                     (
                         StatusCode::INTERNAL_SERVER_ERROR,
-                        [("Cache-Control", "max-age=300, must-revalidate")],
+                        [("Cache-Control", "max-age=300, must-revalidate".to_string())],
                         Json(json!({ "error": err.to_string()})),
                     )
                 }
@@ -568,7 +590,7 @@ async fn get_avl_head(State(state): State<Arc<AppState>>) -> impl IntoResponse {
             tracing::error!("❌ Cannot get avl head: {:?}", err.to_string());
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                [("Cache-Control", "max-age=300, must-revalidate")],
+                [("Cache-Control", "max-age=300, must-revalidate".to_string())],
                 Json(json!({ "error": err.to_string()})),
             )
         }
