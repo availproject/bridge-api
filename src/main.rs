@@ -48,11 +48,11 @@ struct AppState {
     contract_chain_id: String,
     contract_address: String,
     bridge_contract_address: String,
-    eth_head_response_cache: u16,
-    avl_head_response_cache: u16,
-    avl_proof_response_cache: u32,
-    eth_proof_response_cache: u32,
-    slot_mapping_response_cache: u32,
+    ETH_HEAD_CACHE_MAXAGE: u16,
+    AVL_HEAD_CACHE_MAXAGE: u16,
+    AVL_PROOF_CACHE_MAXAGE: u32,
+    ETH_PROOF_CACHE_MAXAGE: u32,
+    SLOT_MAPPING_CACHE_MAXAGE: u32,
 }
 
 #[derive(Deserialize)]
@@ -212,7 +212,7 @@ async fn get_eth_proof(
             .await
     });
 
-    let eth_proof_response_cache = state.eth_proof_response_cache;
+    let ETH_PROOF_CACHE_MAXAGE = state.ETH_PROOF_CACHE_MAXAGE;
     let url = format!(
         "{}?chainName={}&contractChainId={}&contractAddress={}&blockHash={}",
         state.succinct_base_url,
@@ -317,7 +317,7 @@ async fn get_eth_proof(
         StatusCode::OK,
         [(
             "Cache-Control".to_string(),
-            format!("public, max-age={}, immutable", eth_proof_response_cache),
+            format!("public, max-age={}, immutable", ETH_PROOF_CACHE_MAXAGE),
         )],
         Json(json!(AggregatedResponse {
             data_root_proof: succinct_data.merkle_branch,
@@ -369,7 +369,7 @@ async fn get_avl_proof(
                 "Cache-Control".to_string(),
                 format!(
                     "public, max-age={}, immutable",
-                    state.avl_proof_response_cache
+                    state.AVL_PROOF_CACHE_MAXAGE
                 ),
             )],
             Json(json!(EthProofResponse {
@@ -426,7 +426,7 @@ async fn get_beacon_slot(
                                 "Cache-Control".to_string(),
                                 format!(
                                     "public, max-age={}, immutable",
-                                    state.slot_mapping_response_cache
+                                    state.SLOT_MAPPING_CACHE_MAXAGE
                                 ),
                             )],
                             Json(json!(SlotMappingResponse {
@@ -537,7 +537,7 @@ async fn get_eth_head(State(state): State<Arc<AppState>>) -> impl IntoResponse {
                                     "Cache-Control",
                                     format!(
                                         "public, max-age={}, must-revalidate",
-                                        state.eth_head_response_cache
+                                        state.ETH_HEAD_CACHE_MAXAGE
                                     ),
                                 )],
                                 Json(json!(HeadResponse {
@@ -625,7 +625,7 @@ async fn get_avl_head(State(state): State<Arc<AppState>>) -> impl IntoResponse {
                         "Cache-Control",
                         format!(
                             "public, max-age={}, must-revalidate",
-                            state.avl_head_response_cache
+                            state.AVL_HEAD_CACHE_MAXAGE
                         ),
                     )],
                     Json(json!(range_blocks)),
@@ -687,23 +687,23 @@ async fn main() {
         avail_chain_name: env::var("AVAIL_CHAIN_NAME").unwrap_or("turing".to_owned()),
         bridge_contract_address: env::var("BRIDGE_CONTRACT_ADDRESS")
             .unwrap_or("0x967F7DdC4ec508462231849AE81eeaa68Ad01389".to_owned()),
-        eth_head_response_cache: env::var("ETH_HEAD_RESPONSE_CACHE")
+        ETH_HEAD_CACHE_MAXAGE: env::var("ETH_HEAD_CACHE_MAXAGE")
             .ok()
             .and_then(|max_request| max_request.parse::<u16>().ok())
             .unwrap_or(240),
-        avl_head_response_cache: env::var("AVL_HEAD_RESPONSE_CACHE")
+        AVL_HEAD_CACHE_MAXAGE: env::var("AVL_HEAD_CACHE_MAXAGE")
             .ok()
             .and_then(|max_request| max_request.parse::<u16>().ok())
             .unwrap_or(600),
-        eth_proof_response_cache: env::var("ETH_PROOF_RESPONSE_CACHE")
+        ETH_PROOF_CACHE_MAXAGE: env::var("ETH_PROOF_CACHE_MAXAGE")
             .ok()
             .and_then(|proof_response| proof_response.parse::<u32>().ok())
             .unwrap_or(172800),
-        avl_proof_response_cache: env::var("AVL_PROOF_RESPONSE_CACHE")
+        AVL_PROOF_CACHE_MAXAGE: env::var("AVL_PROOF_CACHE_MAXAGE")
             .ok()
             .and_then(|proof_response| proof_response.parse::<u32>().ok())
             .unwrap_or(172800),
-        slot_mapping_response_cache: env::var("SLOT_MAPPING_RESPONSE_CACHE")
+        SLOT_MAPPING_CACHE_MAXAGE: env::var("SLOT_MAPPING_CACHE_MAXAGE")
             .ok()
             .and_then(|slot_mapping_response| slot_mapping_response.parse::<u32>().ok())
             .unwrap_or(172800),
