@@ -37,6 +37,7 @@ use tracing_subscriber::prelude::*;
 #[global_allocator]
 static GLOBAL: Jemalloc = Jemalloc;
 
+#[derive(Debug)]
 struct AppState {
     avail_client: HttpClient,
     ethereum_client: HttpClient,
@@ -47,6 +48,11 @@ struct AppState {
     contract_chain_id: String,
     contract_address: String,
     bridge_contract_address: String,
+    eth_head_cache_maxage: u16,
+    avl_head_cache_maxage: u16,
+    avl_proof_cache_maxage: u32,
+    eth_proof_cache_maxage: u32,
+    slot_mapping_cache_maxage: u32,
 }
 
 #[derive(Deserialize)]
@@ -205,16 +211,18 @@ async fn get_eth_proof(
             )
             .await
     });
-    let succinct_response_fut = tokio::spawn(async move {
-        let url = format!(
-            "{}?chainName={}&contractChainId={}&contractAddress={}&blockHash={}",
-            state.succinct_base_url,
-            state.avail_chain_name,
-            state.contract_chain_id,
-            state.contract_address,
-            block_hash
-        );
 
+    let eth_proof_cache_maxage = state.eth_proof_cache_maxage;
+    let url = format!(
+        "{}?chainName={}&contractChainId={}&contractAddress={}&blockHash={}",
+        state.succinct_base_url,
+        state.avail_chain_name,
+        state.contract_chain_id,
+        state.contract_address,
+        block_hash
+    );
+
+    let succinct_response_fut = tokio::spawn(async move {
         let succinct_response = state.request_client.get(url).send().await;
         match succinct_response {
             Ok(resp) => resp.json::<SuccinctAPIResponse>().await,
@@ -229,7 +237,7 @@ async fn get_eth_proof(
                 tracing::error!("❌ Cannot get kate data proof response: {:?}", err);
                 return (
                     StatusCode::BAD_REQUEST,
-                    [("Cache-Control", "max-age=300, must-revalidate")],
+                    [("Cache-Control", "max-age=60, must-revalidate".to_string())],
                     Json(json!({ "error": err.to_string()})),
                 );
             }
@@ -238,7 +246,7 @@ async fn get_eth_proof(
             tracing::error!("❌ {:?}", err);
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                [("Cache-Control", "max-age=300, must-revalidate")],
+                [("Cache-Control", "max-age=60, must-revalidate".to_string())],
                 Json(json!({ "error": err.to_string()})),
             );
         }
@@ -256,7 +264,7 @@ async fn get_eth_proof(
                 tracing::error!("❌ Succinct API returned unsuccessfully");
                 return (
                     StatusCode::NOT_FOUND,
-                    [("Cache-Control", "max-age=300, must-revalidate")],
+                    [("Cache-Control", "max-age=60, must-revalidate".to_string())],
                     Json(json!({ "error": data })),
                 );
             }
@@ -264,7 +272,7 @@ async fn get_eth_proof(
                 tracing::error!("❌ {:?}", err);
                 return (
                     StatusCode::INTERNAL_SERVER_ERROR,
-                    [("Cache-Control", "max-age=300, must-revalidate")],
+                    [("Cache-Control", "max-age=60, must-revalidate".to_string())],
                     Json(json!({ "error": err.to_string()})),
                 );
             }
@@ -272,7 +280,7 @@ async fn get_eth_proof(
                 tracing::error!("❌ Succinct API returned no data");
                 return (
                     StatusCode::INTERNAL_SERVER_ERROR,
-                    [("Cache-Control", "max-age=300, must-revalidate")],
+                    [("Cache-Control", "max-age=60, must-revalidate".to_string())],
                     Json(json!({ "error": "Succinct API returned no data"})),
                 );
             }
@@ -281,7 +289,7 @@ async fn get_eth_proof(
             tracing::error!("❌ {:?}", err);
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                [("Cache-Control", "max-age=300, must-revalidate")],
+                [("Cache-Control", "max-age=60, must-revalidate".to_string())],
                 Json(json!({ "error": err.to_string()})),
             );
         }
@@ -289,7 +297,10 @@ async fn get_eth_proof(
 
     (
         StatusCode::OK,
-        [("Cache-Control", "public, max-age=31536000, immutable")],
+        [(
+            "Cache-Control",
+            format!("public, max-age={}, immutable", eth_proof_cache_maxage),
+        )],
         Json(json!(AggregatedResponse {
             data_root_proof: succinct_data.merkle_branch,
             leaf_proof: data_proof_res.data_proof.proof,
@@ -336,7 +347,13 @@ async fn get_avl_proof(
     match proof {
         Ok(mut resp) => (
             StatusCode::OK,
-            [("Cache-Control", "public, max-age=31536000, immutable")],
+            [(
+                "Cache-Control",
+                format!(
+                    "public, max-age={}, immutable",
+                    state.avl_proof_cache_maxage
+                ),
+            )],
             Json(json!(EthProofResponse {
                 account_proof: resp.account_proof,
                 storage_proof: resp.storage_proof.swap_remove(0).proof,
@@ -347,13 +364,13 @@ async fn get_avl_proof(
             if err.to_string().ends_with("status code: 429") {
                 (
                     StatusCode::TOO_MANY_REQUESTS,
-                    [("Cache-Control", "max-age=300, must-revalidate")],
+                    [("Cache-Control", "max-age=60, must-revalidate".to_string())],
                     Json(json!({ "error": err.to_string()})),
                 )
             } else {
                 (
                     StatusCode::INTERNAL_SERVER_ERROR,
-                    [("Cache-Control", "max-age=300, must-revalidate")],
+                    [("Cache-Control", "max-age=60, must-revalidate".to_string())],
                     Json(json!({ "error": err.to_string()})),
                 )
             }
@@ -381,7 +398,13 @@ async fn get_beacon_slot(
                     if rsp_data.status == "OK" {
                         (
                             StatusCode::OK,
-                            [("Cache-Control", "public, max-age=31536000, immutable")],
+                            [(
+                                "Cache-Control",
+                                format!(
+                                    "public, max-age={}, immutable",
+                                    state.slot_mapping_cache_maxage
+                                ),
+                            )],
                             Json(json!(SlotMappingResponse {
                                 block_number: rsp_data.data.exec_block_number,
                                 block_hash: rsp_data.data.exec_block_hash
@@ -394,7 +417,7 @@ async fn get_beacon_slot(
                         );
                         (
                             StatusCode::INTERNAL_SERVER_ERROR,
-                            [("Cache-Control", "max-age=300, must-revalidate")],
+                            [("Cache-Control", "max-age=60, must-revalidate".to_string())],
                             Json(json!({ "error": "Cannot fetch slot data"})),
                         )
                     }
@@ -403,7 +426,7 @@ async fn get_beacon_slot(
                     tracing::error!("❌ Cannot get beacon API response data: {:?}", err);
                     (
                         StatusCode::INTERNAL_SERVER_ERROR,
-                        [("Cache-Control", "max-age=300, must-revalidate")],
+                        [("Cache-Control", "max-age=60, must-revalidate".to_string())],
                         Json(json!({ "error": err.to_string()})),
                     )
                 }
@@ -413,7 +436,7 @@ async fn get_beacon_slot(
             tracing::error!("❌ Cannot get beacon API data: {:?}", err);
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                [("Cache-Control", "max-age=300, must-revalidate")],
+                [("Cache-Control", "max-age=60, must-revalidate".to_string())],
                 Json(json!({ "error": err.to_string()})),
             )
         }
@@ -477,7 +500,13 @@ async fn get_eth_head(State(state): State<Arc<AppState>>) -> impl IntoResponse {
                             let now = Utc::now().timestamp() as u64;
                             (
                                 StatusCode::OK,
-                                [("Cache-Control", "public, max-age=7200, must-revalidate")],
+                                [(
+                                    "Cache-Control",
+                                    format!(
+                                        "public, max-age={}, must-revalidate",
+                                        state.eth_head_cache_maxage
+                                    ),
+                                )],
                                 Json(json!(HeadResponse {
                                     slot,
                                     timestamp,
@@ -490,13 +519,13 @@ async fn get_eth_head(State(state): State<Arc<AppState>>) -> impl IntoResponse {
                             if err.to_string().ends_with("status code: 429") {
                                 (
                                     StatusCode::TOO_MANY_REQUESTS,
-                                    [("Cache-Control", "max-age=300, must-revalidate")],
+                                    [("Cache-Control", "max-age=60, must-revalidate".to_string())],
                                     Json(json!({ "error": err.to_string()})),
                                 )
                             } else {
                                 (
                                     StatusCode::INTERNAL_SERVER_ERROR,
-                                    [("Cache-Control", "max-age=300, must-revalidate")],
+                                    [("Cache-Control", "max-age=60, must-revalidate".to_string())],
                                     Json(json!({ "error": err.to_string()})),
                                 )
                             }
@@ -508,13 +537,13 @@ async fn get_eth_head(State(state): State<Arc<AppState>>) -> impl IntoResponse {
                     if err.to_string().ends_with("status code: 429") {
                         (
                             StatusCode::TOO_MANY_REQUESTS,
-                            [("Cache-Control", "max-age=300, must-revalidate")],
+                            [("Cache-Control", "max-age=60, must-revalidate".to_string())],
                             Json(json!({ "error": err.to_string()})),
                         )
                     } else {
                         (
                             StatusCode::INTERNAL_SERVER_ERROR,
-                            [("Cache-Control", "max-age=300, must-revalidate")],
+                            [("Cache-Control", "max-age=60, must-revalidate".to_string())],
                             Json(json!({ "error": err.to_string()})),
                         )
                     }
@@ -528,7 +557,7 @@ async fn get_eth_head(State(state): State<Arc<AppState>>) -> impl IntoResponse {
             );
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                [("Cache-Control", "max-age=300, must-revalidate")],
+                [("Cache-Control", "max-age=60, must-revalidate".to_string())],
                 Json(json!({ "error": err.to_string()})),
             )
         }
@@ -549,14 +578,20 @@ async fn get_avl_head(State(state): State<Arc<AppState>>) -> impl IntoResponse {
             match range_response {
                 Ok(range_blocks) => (
                     StatusCode::OK,
-                    [("Cache-Control", "public, max-age=900, must-revalidate")],
+                    [(
+                        "Cache-Control",
+                        format!(
+                            "public, max-age={}, must-revalidate",
+                            state.avl_head_cache_maxage
+                        ),
+                    )],
                     Json(json!(range_blocks)),
                 ),
                 Err(err) => {
                     tracing::error!("❌ Cannot parse range blocks: {:?}", err.to_string());
                     (
                         StatusCode::INTERNAL_SERVER_ERROR,
-                        [("Cache-Control", "max-age=300, must-revalidate")],
+                        [("Cache-Control", "max-age=60, must-revalidate".to_string())],
                         Json(json!({ "error": err.to_string()})),
                     )
                 }
@@ -566,7 +601,7 @@ async fn get_avl_head(State(state): State<Arc<AppState>>) -> impl IntoResponse {
             tracing::error!("❌ Cannot get avl head: {:?}", err.to_string());
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                [("Cache-Control", "max-age=300, must-revalidate")],
+                [("Cache-Control", "max-age=60, must-revalidate".to_string())],
                 Json(json!({ "error": err.to_string()})),
             )
         }
@@ -616,6 +651,26 @@ async fn main() {
         avail_chain_name: env::var("AVAIL_CHAIN_NAME").unwrap_or("turing".to_owned()),
         bridge_contract_address: env::var("BRIDGE_CONTRACT_ADDRESS")
             .unwrap_or("0x967F7DdC4ec508462231849AE81eeaa68Ad01389".to_owned()),
+        eth_head_cache_maxage: env::var("ETH_HEAD_CACHE_MAXAGE")
+            .ok()
+            .and_then(|max_request| max_request.parse::<u16>().ok())
+            .unwrap_or(240),
+        avl_head_cache_maxage: env::var("AVL_HEAD_CACHE_MAXAGE")
+            .ok()
+            .and_then(|max_request| max_request.parse::<u16>().ok())
+            .unwrap_or(600),
+        eth_proof_cache_maxage: env::var("ETH_PROOF_CACHE_MAXAGE")
+            .ok()
+            .and_then(|proof_response| proof_response.parse::<u32>().ok())
+            .unwrap_or(172800),
+        avl_proof_cache_maxage: env::var("AVL_PROOF_CACHE_MAXAGE")
+            .ok()
+            .and_then(|proof_response| proof_response.parse::<u32>().ok())
+            .unwrap_or(172800),
+        slot_mapping_cache_maxage: env::var("SLOT_MAPPING_CACHE_MAXAGE")
+            .ok()
+            .and_then(|slot_mapping_response| slot_mapping_response.parse::<u32>().ok())
+            .unwrap_or(172800),
     });
 
     let app = Router::new()
@@ -640,6 +695,7 @@ async fn main() {
     let listener = tokio::net::TcpListener::bind(format!("{}:{}", host, port))
         .await
         .unwrap();
+
     tracing::info!("🚀 Listening on {} port {}", host, port);
     axum::serve(listener, app).await.unwrap();
 }
