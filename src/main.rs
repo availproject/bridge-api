@@ -44,6 +44,7 @@ struct AppState {
     request_client: Client,
     succinct_base_url: String,
     beaconchain_base_url: String,
+    indexer_base_url: String,
     avail_chain_name: String,
     contract_chain_id: String,
     contract_address: String,
@@ -53,6 +54,7 @@ struct AppState {
     avl_proof_cache_maxage: u32,
     eth_proof_cache_maxage: u32,
     slot_mapping_cache_maxage: u32,
+    transactions_cache_maxage: u32,
 }
 
 #[derive(Deserialize)]
@@ -179,6 +181,56 @@ struct RangeBlocks {
 #[serde(rename_all = "camelCase")]
 struct RangeBlocksAPIResponse {
     data: RangeBlocks,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
+struct Transaction {
+    source_chain: String,
+    destination_chain: String,
+    message_id: u32,
+    status: String,
+    source_transaction_hash: String,
+    source_transaction_block_number: u32,
+    source_transaction_index: u32,
+    source_transaction_timestamp: String, // Use appropriate type for date
+    destination_transaction_hash: String,
+    destination_transaction_block_number: u32,
+    destination_transaction_timestamp: String, // Use appropriate type for date
+    destination_transaction_index: u32,
+    destination_token_address: String,
+    depositor_address: String,
+    receiver_address: String,
+    amount: String,
+    data_type: String,
+    // block_hash: String,
+    // source_token_address: String,
+    // message: String,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
+struct PaginationData {
+    has_next_page: bool,
+    page: u32,
+    page_size: u32,
+    total_count: u32,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
+struct Response {
+    result: Vec<Transaction>,
+    pagination_data: PaginationData,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
+struct TransactionQuery {
+    avail_address: Option<String>,
+    eth_address: Option<String>,
+    page: Option<u32>,
+    page_size: Option<u32>,
 }
 
 async fn alive() -> Result<Json<Value>, StatusCode> {
@@ -608,6 +660,65 @@ async fn get_avl_head(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     }
 }
 
+#[inline(always)]
+async fn get_transactions(
+    State(state): State<Arc<AppState>>,
+    Query(q): Query<TransactionQuery>,
+) -> impl IntoResponse {
+    // limit request page size to 100
+    let mut page_size = q.page_size.unwrap_or(100);
+    if page_size > 100 {
+        page_size = 100;
+    }
+
+    let result_response = state
+        .request_client
+        .get(format!("{}/{}", state.indexer_base_url, "transactions"))
+        .query(&[
+            ("ethAddress", q.eth_address.unwrap_or(String::new())),
+            ("availAddress", q.avail_address.unwrap_or(String::new())),
+            ("page", q.page.unwrap_or(0).to_string()),
+            ("pageSize", page_size.to_string()),
+        ])
+        .send()
+        .await;
+
+    return match result_response {
+        Ok(response) => {
+            let result = response.json::<Response>().await;
+            match result {
+                Ok(transactions) => (
+                    StatusCode::OK,
+                    [(
+                        "Cache-Control",
+                        format!(
+                            "public, max-age={}, must-revalidate",
+                            state.transactions_cache_maxage
+                        ),
+                    )],
+                    Json(json!(transactions)),
+                ),
+                Err(err) => {
+                    tracing::error!("❌ Cannot map transactions: {:?}", err.to_string());
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        [("Cache-Control", "max-age=60, must-revalidate".to_string())],
+                        Json(json!({ "error": err.to_string()})),
+                    )
+                }
+            }
+        }
+        Err(err) => {
+            tracing::error!("❌ Cannot fetch transactions: {:?}", err.to_string());
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                [("Cache-Control", "max-age=60, must-revalidate".to_string())],
+                Json(json!({ "error": err.to_string()})),
+            )
+        }
+    };
+}
+
 #[tokio::main]
 async fn main() {
     dotenvy::dotenv().ok();
@@ -645,6 +756,8 @@ async fn main() {
             .unwrap_or("https://beaconapi.succinct.xyz/api/integrations/vectorx".to_owned()),
         beaconchain_base_url: env::var("BEACONCHAIN_URL")
             .unwrap_or("https://sepolia.beaconcha.in/api/v1/slot".to_owned()),
+        indexer_base_url: env::var("INDEXER_BASE_URL")
+            .unwrap_or("https://bridge-indie.slowops.xyz".to_owned()),
         contract_address: env::var("VECTORX_CONTRACT_ADDRESS")
             .unwrap_or("0xe542dB219a7e2b29C7AEaEAce242c9a2Cd528F96".to_owned()),
         contract_chain_id: env::var("CONTRACT_CHAIN_ID").unwrap_or("11155111".to_owned()),
@@ -671,6 +784,10 @@ async fn main() {
             .ok()
             .and_then(|slot_mapping_response| slot_mapping_response.parse::<u32>().ok())
             .unwrap_or(172800),
+        transactions_cache_maxage: env::var("TRANSACTIONS_CACHE_MAXAGE")
+            .ok()
+            .and_then(|transactions_cache| transactions_cache.parse::<u32>().ok())
+            .unwrap_or(1800),
     });
 
     let app = Router::new()
@@ -681,6 +798,7 @@ async fn main() {
         .route("/avl/head", get(get_avl_head))
         .route("/avl/proof/:block_hash/:message_id", get(get_avl_proof))
         .route("/beacon/slot/:slot_number", get(get_beacon_slot))
+        .route("/transactions", get(get_transactions))
         .layer(TraceLayer::new_for_http())
         .layer(CompressionLayer::new())
         .layer(
