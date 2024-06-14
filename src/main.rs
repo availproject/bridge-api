@@ -194,18 +194,18 @@ struct Transaction {
     source_transaction_block_number: u32,
     source_transaction_index: u32,
     source_transaction_timestamp: String, // Use appropriate type for date
-    destination_transaction_hash: String,
-    destination_transaction_block_number: u32,
-    destination_transaction_timestamp: String, // Use appropriate type for date
-    destination_transaction_index: u32,
-    destination_token_address: String,
+    destination_transaction_hash: Option<String>,
+    destination_transaction_block_number: Option<u32>,
+    destination_transaction_timestamp: Option<String>, // Use appropriate type for date
+    destination_transaction_index: Option<u32>,
+    destination_token_address: Option<String>,
     depositor_address: String,
     receiver_address: String,
     amount: String,
     data_type: String,
-    // block_hash: String,
-    // source_token_address: String,
-    // message: String,
+    block_hash: Option<String>,
+    source_token_address: Option<String>,
+    message: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
