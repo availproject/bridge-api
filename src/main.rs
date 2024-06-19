@@ -186,23 +186,23 @@ struct RangeBlocksAPIResponse {
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(rename_all = "camelCase")]
 struct Transaction {
-    source_chain: String,
-    destination_chain: String,
-    message_id: u32,
-    status: String,
-    source_transaction_hash: String,
-    source_transaction_block_number: u32,
-    source_transaction_index: u32,
-    source_transaction_timestamp: String, // Use appropriate type for date
+    source_chain: Option<String>,
+    destination_chain: Option<String>,
+    message_id: Option<u32>,
+    status: Option<String>,
+    source_transaction_hash: Option<String>,
+    source_transaction_block_number: Option<u32>,
+    source_transaction_index: Option<u32>,
+    source_transaction_timestamp: Option<String>, // Use appropriate type for date
     destination_transaction_hash: Option<String>,
     destination_transaction_block_number: Option<u32>,
     destination_transaction_timestamp: Option<String>, // Use appropriate type for date
     destination_transaction_index: Option<u32>,
     destination_token_address: Option<String>,
-    depositor_address: String,
-    receiver_address: String,
-    amount: String,
-    data_type: String,
+    depositor_address: Option<String>,
+    receiver_address: Option<String>,
+    amount: Option<String>,
+    data_type: Option<String>,
     block_hash: Option<String>,
     source_token_address: Option<String>,
     message: Option<String>,
@@ -220,13 +220,15 @@ struct PaginationData {
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(rename_all = "camelCase")]
 struct Response {
-    result: Vec<Transaction>,
-    pagination_data: PaginationData,
+    result: Option<Vec<Transaction>>,
+    pagination_data: Option<PaginationData>,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(rename_all = "camelCase")]
 struct TransactionQuery {
+    source_chain: Option<String>,
+    destination_chain: Option<String>,
     avail_address: Option<String>,
     eth_address: Option<String>,
     page: Option<u32>,
@@ -306,13 +308,13 @@ async fn get_eth_proof(
     let succinct_data = match succinct_response {
         Ok(data) => match data {
             Ok(SuccinctAPIResponse {
-                data: Some(data), ..
-            }) => data,
+                   data: Some(data), ..
+               }) => data,
             Ok(SuccinctAPIResponse {
-                success: Some(false),
-                error: Some(data),
-                ..
-            }) => {
+                   success: Some(false),
+                   error: Some(data),
+                   ..
+               }) => {
                 tracing::error!("❌ Succinct API returned unsuccessfully");
                 return (
                     StatusCode::NOT_FOUND,
@@ -381,7 +383,7 @@ async fn get_avl_proof(
             message_id.to_be_bytes_vec(),
             U256::from(1).to_be_bytes_vec(),
         ]
-        .concat(),
+            .concat(),
     );
     let result = hasher.finalize();
     let proof: Result<AccountStorageProofResponse, jsonrpsee::core::Error> = state
@@ -663,28 +665,43 @@ async fn get_avl_head(State(state): State<Arc<AppState>>) -> impl IntoResponse {
 #[inline(always)]
 async fn get_transactions(
     State(state): State<Arc<AppState>>,
-    Query(q): Query<TransactionQuery>,
+    Query(mut q): Query<TransactionQuery>,
 ) -> impl IntoResponse {
     // limit request page size to 100
-    let mut page_size = q.page_size.unwrap_or(100);
-    if page_size > 100 {
-        page_size = 100;
+    let page_size = q.page_size.unwrap_or(100);
+    if page_size > 100 || page_size == 0 {
+        q.page_size = Some(100);
     }
 
     let result_response = state
         .request_client
         .get(format!("{}/{}", state.indexer_base_url, "transactions"))
-        .query(&[
-            ("ethAddress", q.eth_address.unwrap_or(String::new())),
-            ("availAddress", q.avail_address.unwrap_or(String::new())),
-            ("page", q.page.unwrap_or(0).to_string()),
-            ("pageSize", page_size.to_string()),
-        ])
+        .query(&q)
         .send()
         .await;
 
     return match result_response {
         Ok(response) => {
+            if response.status() != 200 {
+                tracing::error!("❌ Cannot get transactions, status: {:?}", response.status());
+                let mut status_code = StatusCode::INTERNAL_SERVER_ERROR;
+                if response.status().is_client_error() {
+                    status_code = StatusCode::NOT_FOUND;
+                }
+
+                return (
+                    status_code,
+                    [(
+                        "Cache-Control",
+                        format!(
+                            "public, max-age={}, must-revalidate",
+                            state.transactions_cache_maxage
+                        ),
+                    )],
+                    Json(json!({ "error": "Request cannot be fulfilled."})),
+                );
+            }
+
             let result = response.json::<Response>().await;
             match result {
                 Ok(transactions) => (
