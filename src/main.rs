@@ -188,7 +188,7 @@ struct RangeBlocksAPIResponse {
 struct Transaction {
     source_chain: Option<Chain>,
     destination_chain: Option<Chain>,
-    message_id: Option<u128>,
+    message_id: Option<u64>,
     status: Option<Status>,
     source_transaction_hash: Option<String>,
     source_transaction_block_number: Option<u64>,
