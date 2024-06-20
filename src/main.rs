@@ -186,16 +186,16 @@ struct RangeBlocksAPIResponse {
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(rename_all = "camelCase")]
 struct Transaction {
-    source_chain: Option<String>,
-    destination_chain: Option<String>,
-    message_id: Option<u32>,
-    status: Option<String>,
+    source_chain: Option<Chain>,
+    destination_chain: Option<Chain>,
+    message_id: Option<u128>,
+    status: Option<Status>,
     source_transaction_hash: Option<String>,
-    source_transaction_block_number: Option<u32>,
+    source_transaction_block_number: Option<u64>,
     source_transaction_index: Option<u32>,
     source_transaction_timestamp: Option<String>, // Use appropriate type for date
     destination_transaction_hash: Option<String>,
-    destination_transaction_block_number: Option<u32>,
+    destination_transaction_block_number: Option<u64>,
     destination_transaction_timestamp: Option<String>, // Use appropriate type for date
     destination_transaction_index: Option<u32>,
     destination_token_address: Option<String>,
@@ -225,14 +225,32 @@ struct Response {
 }
 
 #[derive(Serialize, Deserialize, Debug)]
+enum Chain {
+    #[serde(rename = "AVAIL")]
+    Avail,
+    #[serde(rename = "ETHEREUM")]
+    Ethereum,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+enum Status {
+    #[serde(rename = "BRIDGED")]
+    Bridged,
+    #[serde(rename = "READY_TO_CLAIM")]
+    ReadyToClaim,
+    #[serde(rename = "CLAIMED")]
+    Claimed,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
 #[serde(rename_all = "camelCase")]
 struct TransactionQuery {
-    source_chain: Option<String>,
-    destination_chain: Option<String>,
-    avail_address: Option<String>,
-    eth_address: Option<String>,
     page: Option<u32>,
     page_size: Option<u32>,
+    source_chain: Option<Chain>,
+    destination_chain: Option<Chain>,
+    status: Option<Status>,
+    user_address: Option<String>,
 }
 
 async fn alive() -> Result<Json<Value>, StatusCode> {
@@ -308,13 +326,13 @@ async fn get_eth_proof(
     let succinct_data = match succinct_response {
         Ok(data) => match data {
             Ok(SuccinctAPIResponse {
-                   data: Some(data), ..
-               }) => data,
+                data: Some(data), ..
+            }) => data,
             Ok(SuccinctAPIResponse {
-                   success: Some(false),
-                   error: Some(data),
-                   ..
-               }) => {
+                success: Some(false),
+                error: Some(data),
+                ..
+            }) => {
                 tracing::error!("❌ Succinct API returned unsuccessfully");
                 return (
                     StatusCode::NOT_FOUND,
@@ -383,7 +401,7 @@ async fn get_avl_proof(
             message_id.to_be_bytes_vec(),
             U256::from(1).to_be_bytes_vec(),
         ]
-            .concat(),
+        .concat(),
     );
     let result = hasher.finalize();
     let proof: Result<AccountStorageProofResponse, jsonrpsee::core::Error> = state
@@ -680,10 +698,13 @@ async fn get_transactions(
         .send()
         .await;
 
-    return match result_response {
+    match result_response {
         Ok(response) => {
             if response.status() != 200 {
-                tracing::error!("❌ Cannot get transactions, status: {:?}", response.status());
+                tracing::error!(
+                    "❌ Cannot get transactions, status: {:?}",
+                    response.status()
+                );
                 let mut status_code = StatusCode::INTERNAL_SERVER_ERROR;
                 if response.status().is_client_error() {
                     status_code = StatusCode::NOT_FOUND;
@@ -691,13 +712,7 @@ async fn get_transactions(
 
                 return (
                     status_code,
-                    [(
-                        "Cache-Control",
-                        format!(
-                            "public, max-age={}, must-revalidate",
-                            state.transactions_cache_maxage
-                        ),
-                    )],
+                    [("Cache-Control", "max-age=60, must-revalidate".to_string())],
                     Json(json!({ "error": "Request cannot be fulfilled."})),
                 );
             }
@@ -733,7 +748,7 @@ async fn get_transactions(
                 Json(json!({ "error": err.to_string()})),
             )
         }
-    };
+    }
 }
 
 #[tokio::main]
