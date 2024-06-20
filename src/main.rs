@@ -186,10 +186,10 @@ struct RangeBlocksAPIResponse {
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(rename_all = "camelCase")]
 struct Transaction {
-    source_chain: Option<Chain>,
-    destination_chain: Option<Chain>,
-    message_id: Option<u64>,
-    status: Option<Status>,
+    source_chain: Chain,
+    destination_chain: Chain,
+    message_id: u64,
+    status: Status,
     source_transaction_hash: Option<String>,
     source_transaction_block_number: Option<u64>,
     source_transaction_index: Option<u32>,
