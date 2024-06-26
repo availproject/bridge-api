@@ -227,3 +227,8 @@ RUSTFLAGS="-C target-cpu=native" cargo run --profile maxperf
         "blockNumber":5380093
       }
       ```
+
+### Examples of using bridge api 
+
+*  We have prepared a set of examples written in Rust and Typescript to help you understand how to use bridge api. You can explore these examples by visiting our [code examples repository](https://github.com/availproject/avail-bridge-examples).
+
