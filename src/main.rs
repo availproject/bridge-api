@@ -1,4 +1,4 @@
-use alloy_primitives::{hex, B256, U256};
+use alloy_primitives::{hex, Address, B256, U256};
 use avail_core::data_proof::AddressedMessage;
 use axum::{
     extract::{Json, Path, Query, State},
@@ -19,6 +19,7 @@ use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha3::{Digest, Keccak256};
+use sp_core::crypto::{AccountId32, Ss58Codec};
 use sp_core::Decode;
 use sp_io::hashing::twox_128;
 use std::env;
@@ -234,8 +235,8 @@ enum Chain {
 
 #[derive(Serialize, Deserialize, Debug)]
 enum Status {
-    #[serde(rename = "BRIDGED")]
-    Bridged,
+    #[serde(rename = "IN_PROGRESS")]
+    InProgress,
     #[serde(rename = "READY_TO_CLAIM")]
     ReadyToClaim,
     #[serde(rename = "CLAIMED")]
@@ -250,7 +251,8 @@ struct TransactionQuery {
     source_chain: Option<Chain>,
     destination_chain: Option<Chain>,
     status: Option<Status>,
-    user_address: Option<String>,
+    eth_address: Option<String>,
+    avail_address: Option<String>,
 }
 
 async fn alive() -> Result<Json<Value>, StatusCode> {
@@ -691,6 +693,39 @@ async fn get_transactions(
         q.page_size = Some(100);
     }
 
+    if q.avail_address.is_none() && q.eth_address.is_none() {
+        tracing::error!("❌ At least one address must be present in the query params.");
+        return (
+            StatusCode::BAD_REQUEST,
+            [("Cache-Control", "max-age=60, must-revalidate".to_string())],
+            Json(
+                json!({ "error": "At least one query address (avail_address, eth_address) must be present in the query params."}),
+            ),
+        );
+    }
+
+    if let Some(ref eth_address) = q.eth_address {
+        if Address::parse_checksummed(eth_address.as_str(), None).is_err() {
+            tracing::error!("❌ Provided Ethereum address is wrong: {:?}", eth_address);
+            return (
+                StatusCode::BAD_REQUEST,
+                [("Cache-Control", "max-age=60, must-revalidate".to_string())],
+                Json(json!({ "error": "Request cannot be fulfilled."})),
+            );
+        }
+    }
+
+    if let Some(ref avail_address) = q.avail_address {
+        if AccountId32::from_ss58check_with_version(avail_address.as_str()).is_err() {
+            tracing::error!("❌ Provided Avail address is wrong: {:?}", avail_address);
+            return (
+                StatusCode::BAD_REQUEST,
+                [("Cache-Control", "max-age=60, must-revalidate".to_string())],
+                Json(json!({ "error": "Request cannot be fulfilled."})),
+            );
+        }
+    }
+
     let result_response = state
         .request_client
         .get(format!("{}/{}", state.indexer_base_url, "transactions"))
@@ -848,4 +883,22 @@ async fn main() {
 
     tracing::info!("🚀 Listening on {} port {}", host, port);
     axum::serve(listener, app).await.unwrap();
+}
+
+#[test]
+fn exploration() {
+    let add = "0xAfF84d35f9c784cE972A7Ff3e3E243E5eb6EF3".to_string();
+    let avail = "4DyWPc4JfC9c3Awp3D8e7HH5UDg4nKGEsumUHcB8pwBpBe1B".to_string();
+
+    if Address::parse_checksummed(add, None).is_ok() {
+        println!("Address is OK");
+    } else {
+        println!("Address is NOT OK")
+    }
+
+    if AccountId32::from_ss58check_with_version(avail.as_str()).is_ok() {
+        println!("AVAIL Address is OK");
+    } else {
+        println!("AVAIL Address is NOT OK")
+    }
 }
