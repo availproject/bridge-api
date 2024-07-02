@@ -1,4 +1,4 @@
-use alloy_primitives::{hex, B256, U256};
+use alloy_primitives::{hex, Address, B256, U256};
 use avail_core::data_proof::AddressedMessage;
 use axum::{
     extract::{Json, Path, Query, State},
@@ -19,6 +19,7 @@ use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha3::{Digest, Keccak256};
+use sp_core::crypto::{AccountId32, Ss58Codec};
 use sp_core::Decode;
 use sp_io::hashing::twox_128;
 use std::env;
@@ -44,6 +45,7 @@ struct AppState {
     request_client: Client,
     succinct_base_url: String,
     beaconchain_base_url: String,
+    indexer_base_url: String,
     avail_chain_name: String,
     contract_chain_id: String,
     contract_address: String,
@@ -53,6 +55,7 @@ struct AppState {
     avl_proof_cache_maxage: u32,
     eth_proof_cache_maxage: u32,
     slot_mapping_cache_maxage: u32,
+    transactions_cache_maxage: u32,
 }
 
 #[derive(Deserialize)]
@@ -179,6 +182,77 @@ struct RangeBlocks {
 #[serde(rename_all = "camelCase")]
 struct RangeBlocksAPIResponse {
     data: RangeBlocks,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
+struct Transaction {
+    source_chain: Chain,
+    destination_chain: Chain,
+    message_id: u64,
+    status: Status,
+    source_transaction_hash: Option<String>,
+    source_transaction_block_number: Option<u64>,
+    source_transaction_index: Option<u32>,
+    source_transaction_timestamp: Option<String>, // Use appropriate type for date
+    destination_transaction_hash: Option<String>,
+    destination_transaction_block_number: Option<u64>,
+    destination_transaction_timestamp: Option<String>, // Use appropriate type for date
+    destination_transaction_index: Option<u32>,
+    destination_token_address: Option<String>,
+    depositor_address: Option<String>,
+    receiver_address: Option<String>,
+    amount: Option<String>,
+    data_type: Option<String>,
+    block_hash: Option<String>,
+    source_token_address: Option<String>,
+    message: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
+struct PaginationData {
+    has_next_page: bool,
+    page: u32,
+    page_size: u32,
+    total_count: u32,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
+struct Response {
+    result: Option<Vec<Transaction>>,
+    pagination_data: Option<PaginationData>,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+enum Chain {
+    #[serde(rename = "AVAIL")]
+    Avail,
+    #[serde(rename = "ETHEREUM")]
+    Ethereum,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+enum Status {
+    #[serde(rename = "IN_PROGRESS")]
+    InProgress,
+    #[serde(rename = "READY_TO_CLAIM")]
+    ReadyToClaim,
+    #[serde(rename = "CLAIMED")]
+    Claimed,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
+struct TransactionQuery {
+    page: Option<u32>,
+    page_size: Option<u32>,
+    source_chain: Option<Chain>,
+    destination_chain: Option<Chain>,
+    status: Option<Status>,
+    eth_address: Option<String>,
+    avail_address: Option<String>,
 }
 
 async fn alive() -> Result<Json<Value>, StatusCode> {
@@ -608,6 +682,110 @@ async fn get_avl_head(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     }
 }
 
+#[inline(always)]
+async fn get_transactions(
+    State(state): State<Arc<AppState>>,
+    Query(mut q): Query<TransactionQuery>,
+) -> impl IntoResponse {
+    // limit request page size to 100
+    let page_size = q.page_size.unwrap_or(100);
+    if page_size > 100 || page_size == 0 {
+        q.page_size = Some(100);
+    }
+
+    if q.avail_address.is_none() && q.eth_address.is_none() {
+        tracing::error!("❌ At least one address must be present in the query params.");
+        return (
+            StatusCode::BAD_REQUEST,
+            [("Cache-Control", "max-age=60, must-revalidate".to_string())],
+            Json(
+                json!({ "error": "At least one query address (avail_address, eth_address) must be present in the query params."}),
+            ),
+        );
+    }
+
+    if let Some(ref eth_address) = q.eth_address {
+        if Address::parse_checksummed(eth_address.as_str(), None).is_err() {
+            tracing::error!("❌ Provided Ethereum address is wrong: {:?}", eth_address);
+            return (
+                StatusCode::BAD_REQUEST,
+                [("Cache-Control", "max-age=60, must-revalidate".to_string())],
+                Json(json!({ "error": "Request cannot be fulfilled."})),
+            );
+        }
+    }
+
+    if let Some(ref avail_address) = q.avail_address {
+        if AccountId32::from_ss58check_with_version(avail_address.as_str()).is_err() {
+            tracing::error!("❌ Provided Avail address is wrong: {:?}", avail_address);
+            return (
+                StatusCode::BAD_REQUEST,
+                [("Cache-Control", "max-age=60, must-revalidate".to_string())],
+                Json(json!({ "error": "Request cannot be fulfilled."})),
+            );
+        }
+    }
+
+    let result_response = state
+        .request_client
+        .get(format!("{}/{}", state.indexer_base_url, "transactions"))
+        .query(&q)
+        .send()
+        .await;
+
+    match result_response {
+        Ok(response) => {
+            if response.status() != 200 {
+                tracing::error!(
+                    "❌ Cannot get transactions, status: {:?}",
+                    response.status()
+                );
+                let mut status_code = StatusCode::INTERNAL_SERVER_ERROR;
+                if response.status().is_client_error() {
+                    status_code = StatusCode::NOT_FOUND;
+                }
+
+                return (
+                    status_code,
+                    [("Cache-Control", "max-age=60, must-revalidate".to_string())],
+                    Json(json!({ "error": "Request cannot be fulfilled."})),
+                );
+            }
+
+            let result = response.json::<Response>().await;
+            match result {
+                Ok(transactions) => (
+                    StatusCode::OK,
+                    [(
+                        "Cache-Control",
+                        format!(
+                            "public, max-age={}, must-revalidate",
+                            state.transactions_cache_maxage
+                        ),
+                    )],
+                    Json(json!(transactions)),
+                ),
+                Err(err) => {
+                    tracing::error!("❌ Cannot map transactions: {:?}", err.to_string());
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        [("Cache-Control", "max-age=60, must-revalidate".to_string())],
+                        Json(json!({ "error": err.to_string()})),
+                    )
+                }
+            }
+        }
+        Err(err) => {
+            tracing::error!("❌ Cannot fetch transactions: {:?}", err.to_string());
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                [("Cache-Control", "max-age=60, must-revalidate".to_string())],
+                Json(json!({ "error": err.to_string()})),
+            )
+        }
+    }
+}
+
 #[tokio::main]
 async fn main() {
     dotenvy::dotenv().ok();
@@ -645,6 +823,8 @@ async fn main() {
             .unwrap_or("https://beaconapi.succinct.xyz/api/integrations/vectorx".to_owned()),
         beaconchain_base_url: env::var("BEACONCHAIN_URL")
             .unwrap_or("https://sepolia.beaconcha.in/api/v1/slot".to_owned()),
+        indexer_base_url: env::var("INDEXER_BASE_URL")
+            .unwrap_or("https://bridge-indie.slowops.xyz".to_owned()),
         contract_address: env::var("VECTORX_CONTRACT_ADDRESS")
             .unwrap_or("0xe542dB219a7e2b29C7AEaEAce242c9a2Cd528F96".to_owned()),
         contract_chain_id: env::var("CONTRACT_CHAIN_ID").unwrap_or("11155111".to_owned()),
@@ -671,6 +851,10 @@ async fn main() {
             .ok()
             .and_then(|slot_mapping_response| slot_mapping_response.parse::<u32>().ok())
             .unwrap_or(172800),
+        transactions_cache_maxage: env::var("TRANSACTIONS_CACHE_MAXAGE")
+            .ok()
+            .and_then(|transactions_cache| transactions_cache.parse::<u32>().ok())
+            .unwrap_or(1800),
     });
 
     let app = Router::new()
@@ -681,6 +865,7 @@ async fn main() {
         .route("/avl/head", get(get_avl_head))
         .route("/avl/proof/:block_hash/:message_id", get(get_avl_proof))
         .route("/beacon/slot/:slot_number", get(get_beacon_slot))
+        .route("/transactions", get(get_transactions))
         .layer(TraceLayer::new_for_http())
         .layer(CompressionLayer::new())
         .layer(
@@ -698,4 +883,22 @@ async fn main() {
 
     tracing::info!("🚀 Listening on {} port {}", host, port);
     axum::serve(listener, app).await.unwrap();
+}
+
+#[test]
+fn exploration() {
+    let add = "0xAfF84d35f9c784cE972A7Ff3e3E243E5eb6EF3".to_string();
+    let avail = "4DyWPc4JfC9c3Awp3D8e7HH5UDg4nKGEsumUHcB8pwBpBe1B".to_string();
+
+    if Address::parse_checksummed(add, None).is_ok() {
+        println!("Address is OK");
+    } else {
+        println!("Address is NOT OK")
+    }
+
+    if AccountId32::from_ss58check_with_version(avail.as_str()).is_ok() {
+        println!("AVAIL Address is OK");
+    } else {
+        println!("AVAIL Address is NOT OK")
+    }
 }
