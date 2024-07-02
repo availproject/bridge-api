@@ -125,48 +125,48 @@ RUSTFLAGS="-C target-cpu=native" cargo run --profile maxperf
       curl "http://localhost:8080/eth/proof/0x5bc7bd3a4793132007d6d0d9c55dc2ded2fe721a49bd771c1d290e6a3c6ec237?index=5"
       ```
 
-        * Response
+      * Response
 
-          ```json
-          {
-            "blobRoot": "0x511030804f9768c9d5c4826cdc7eba25ba0fd8e73ea32467e5fad547397620f8",
-            "blockHash": "0x5bc7bd3a4793132007d6d0d9c55dc2ded2fe721a49bd771c1d290e6a3c6ec237",
-            "bridgeRoot": "0xf6c807bc73a637957a61d620bd5e4ef8c7dd234e5fc96dfb6d6041bbe2947782",
-            "dataRoot": "0x2179e18ee112b080794b40f2239d77041c715ad7392d9fce054b7c10eacd4ebc",
-            "dataRootCommitment": "0x41cfe14b2e229cc5b4ee0cb7c3c909e1f78ae9e32f986e7496bfd4e007e06519",
-            "dataRootIndex": 48,
-            "dataRootProof": [
-              "0x0395f21560a9ccc1f2aa972601250256fbdb20fd936e1723397ff8d5e4f07b5d",
-              "0x1e91eb5ce2802373a583ce83898e8b4c1bb648e3c76bad87820a197b73b6d23b",
-              "0xd49b33b5754aa6c9549e9677e4c646bd4e7d500a2ab9761cffff5363f4608ac7",
-              "0x575858cb3bb948af2d8c4582310f951eb798281f71e913e044c6c415031f58a3",
-              "0x353fe475ab9b0e00c3bfae8598fef61ac2921a7928b21ad45b6594c023611156",
-              "0x4cb574d05c6606d2509ec6849e0cb53d04c5eead1cdbed4704018da938df5460",
-              "0xd88ddfeed400a8755596b21942c1497e114c302e6118290f91e6772976041fa1",
-              "0x87eb0ddba57e35f6d286673802a4af5975e22506c7cf4c64bb6be5ee11527f2c"
-              ],
-              "leaf": "0xe17de7631392427460102691ba8a22adf5fb410548e50d6c636bf1f96840c3c3",
-              "leafIndex": 0,
-              "leafProof": [
-                "0x00017cadd87ec12039f98d646afaa33ed843056ad12f5e971cc81be15d00c26f",
-                "0xd046caabde74922f9d69e9fd33de6d3b9ee0f5c536183c4f4259f078afda538a"
-              ],
-              "message": {
-              "destinationDomain": 2,
-              "from": "0xd43593c715fdd31c61141abd04a99fd6822c8558854ccde39a5684e7a56da27d",
-              "id": 256491151949829,
-              "message": {
-                "fungibleToken": {
-                  "amount": 5000000000000000,
-                  "asset_id": "0x0000000000000000000000000000000000000000000000000000000000000000"
-                }
-              },
-              "originDomain": 1,
-              "to": "0x0000000000000000000000000000000000000000000000000000000000000000"
-              },
-              "rangeHash": "0x21c402a3ccf8df26cb720c6d2fb409f04c809adef7a9a852e463cca83588f4fb"
-          }
-          ```
+        ```json
+        {
+          "blobRoot": "0x511030804f9768c9d5c4826cdc7eba25ba0fd8e73ea32467e5fad547397620f8",
+          "blockHash": "0x5bc7bd3a4793132007d6d0d9c55dc2ded2fe721a49bd771c1d290e6a3c6ec237",
+          "bridgeRoot": "0xf6c807bc73a637957a61d620bd5e4ef8c7dd234e5fc96dfb6d6041bbe2947782",
+          "dataRoot": "0x2179e18ee112b080794b40f2239d77041c715ad7392d9fce054b7c10eacd4ebc",
+          "dataRootCommitment": "0x41cfe14b2e229cc5b4ee0cb7c3c909e1f78ae9e32f986e7496bfd4e007e06519",
+          "dataRootIndex": 48,
+          "dataRootProof": [
+            "0x0395f21560a9ccc1f2aa972601250256fbdb20fd936e1723397ff8d5e4f07b5d",
+            "0x1e91eb5ce2802373a583ce83898e8b4c1bb648e3c76bad87820a197b73b6d23b",
+            "0xd49b33b5754aa6c9549e9677e4c646bd4e7d500a2ab9761cffff5363f4608ac7",
+            "0x575858cb3bb948af2d8c4582310f951eb798281f71e913e044c6c415031f58a3",
+            "0x353fe475ab9b0e00c3bfae8598fef61ac2921a7928b21ad45b6594c023611156",
+            "0x4cb574d05c6606d2509ec6849e0cb53d04c5eead1cdbed4704018da938df5460",
+            "0xd88ddfeed400a8755596b21942c1497e114c302e6118290f91e6772976041fa1",
+            "0x87eb0ddba57e35f6d286673802a4af5975e22506c7cf4c64bb6be5ee11527f2c"
+            ],
+            "leaf": "0xe17de7631392427460102691ba8a22adf5fb410548e50d6c636bf1f96840c3c3",
+            "leafIndex": 0,
+            "leafProof": [
+              "0x00017cadd87ec12039f98d646afaa33ed843056ad12f5e971cc81be15d00c26f",
+              "0xd046caabde74922f9d69e9fd33de6d3b9ee0f5c536183c4f4259f078afda538a"
+            ],
+            "message": {
+            "destinationDomain": 2,
+            "from": "0xd43593c715fdd31c61141abd04a99fd6822c8558854ccde39a5684e7a56da27d",
+            "id": 256491151949829,
+            "message": {
+              "fungibleToken": {
+                "amount": 5000000000000000,
+                "asset_id": "0x0000000000000000000000000000000000000000000000000000000000000000"
+              }
+            },
+            "originDomain": 1,
+            "to": "0x0000000000000000000000000000000000000000000000000000000000000000"
+            },
+            "rangeHash": "0x21c402a3ccf8df26cb720c6d2fb409f04c809adef7a9a852e463cca83588f4fb"
+        }
+        ```
 
 ### Get Account/Storage proofs
 
@@ -275,3 +275,8 @@ RUSTFLAGS="-C target-cpu=native" cargo run --profile maxperf
         ]
       } 
       ```
+
+### Examples of using bridge api 
+
+*  We have prepared a set of examples written in Rust and Typescript to help you understand how to use bridge api. You can explore these examples by visiting our [code examples repository](https://github.com/availproject/avail-bridge-examples).
+
