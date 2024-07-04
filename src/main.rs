@@ -200,10 +200,10 @@ struct Transaction {
     destination_transaction_timestamp: Option<String>, // Use appropriate type for date
     destination_transaction_index: Option<u32>,
     destination_token_address: Option<String>,
-    depositor_address: Option<String>,
-    receiver_address: Option<String>,
+    depositor_address: String,
+    receiver_address: String,
     amount: Option<String>,
-    data_type: Option<String>,
+    data_type: String,
     block_hash: Option<String>,
     source_token_address: Option<String>,
     message: Option<String>,
