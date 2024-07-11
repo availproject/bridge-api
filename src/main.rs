@@ -194,10 +194,10 @@ struct Transaction {
     source_transaction_hash: Option<String>,
     source_transaction_block_number: Option<u64>,
     source_transaction_index: Option<u32>,
-    source_transaction_timestamp: Option<String>, // Use appropriate type for date
+    source_transaction_timestamp: Option<String>,
     destination_transaction_hash: Option<String>,
     destination_transaction_block_number: Option<u64>,
-    destination_transaction_timestamp: Option<String>, // Use appropriate type for date
+    destination_transaction_timestamp: Option<String>,
     destination_transaction_index: Option<u32>,
     destination_token_address: Option<String>,
     depositor_address: String,
@@ -235,8 +235,8 @@ enum Chain {
 
 #[derive(Serialize, Deserialize, Debug)]
 enum Status {
-    #[serde(rename = "IN_PROGRESS")]
-    InProgress,
+    #[serde(rename = "BRIDGED")]
+    Bridged,
     #[serde(rename = "READY_TO_CLAIM")]
     ReadyToClaim,
     #[serde(rename = "CLAIMED")]
