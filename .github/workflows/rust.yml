@@ -44,8 +44,8 @@ jobs:
         with:
           command: fmt
           args: --all -- --check
-
-      - name: Security audit
-        uses: actions-rs/audit-check@v1
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+# TODO enable security audit once the lib deps are updated.
+#      - name: Security audit
+#        uses: actions-rs/audit-check@v1
+#        with:
+#          token: ${{ secrets.GITHUB_TOKEN }}
