@@ -53,6 +53,7 @@ struct AppState {
     avl_proof_cache_maxage: u32,
     eth_proof_cache_maxage: u32,
     slot_mapping_cache_maxage: u32,
+    beaconchain_api_key: String,
 }
 
 #[derive(Deserialize)]
@@ -387,6 +388,7 @@ async fn get_beacon_slot(
     let resp = state
         .request_client
         .get(format!("{}/{}", state.beaconchain_base_url, slot))
+        .header("apikey", state.beaconchain_api_key.clone())
         .send()
         .await;
 
@@ -671,6 +673,7 @@ async fn main() {
             .ok()
             .and_then(|slot_mapping_response| slot_mapping_response.parse::<u32>().ok())
             .unwrap_or(172800),
+        beaconchain_api_key: env::var("BEACONCHAIN_API_KEY").unwrap_or("".to_owned()),
     });
 
     let app = Router::new()
