@@ -1,4 +1,5 @@
 use alloy_primitives::{hex, B256, U256};
+use anyhow::{Context, Result};
 use avail_core::data_proof::AddressedMessage;
 use axum::{
     extract::{Json, Path, Query, State},
@@ -7,6 +8,8 @@ use axum::{
     routing::get,
     Router,
 };
+use backon::ExponentialBuilder;
+use backon::Retryable;
 use chrono::Utc;
 use http::Method;
 use jsonrpsee::core::Error;
@@ -15,17 +18,18 @@ use jsonrpsee::{
     http_client::{HttpClient, HttpClientBuilder},
     rpc_params,
 };
+use lazy_static::lazy_static;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha3::{Digest, Keccak256};
 use sp_core::Decode;
 use sp_io::hashing::twox_128;
-use std::env;
-use std::sync::Arc;
+use std::{env, process, time::Duration};
+use std::{sync::Arc, time};
 #[cfg(not(target_env = "msvc"))]
 use tikv_jemallocator::Jemalloc;
-use tokio::join;
+use tokio::{join, sync::Mutex};
 use tower_http::{
     compression::CompressionLayer,
     cors::{Any, CorsLayer},
@@ -165,6 +169,16 @@ struct EthProofResponse {
 #[serde(rename_all = "camelCase")]
 struct HeadResponse {
     pub slot: u64,
+    pub timestamp: u64,
+    pub timestamp_diff: u64,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct HeadResponseV2 {
+    pub slot: u64,
+    pub block_number: u64,
+    pub block_hash: B256,
     pub timestamp: u64,
     pub timestamp_diff: u64,
 }
@@ -447,6 +461,38 @@ async fn get_beacon_slot(
 
 /// get_eth_head returns Ethereum head with the latest slot/block that is stored and a time.
 #[inline(always)]
+async fn get_eth_head_v2(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    let slot_block_head = SLOT_BLOCK_HEAD.lock().await;
+    if let Some((slot, block, hash, timestamp)) = slot_block_head.as_ref() {
+        let now = Utc::now().timestamp() as u64;
+        (
+            StatusCode::OK,
+            [(
+                "Cache-Control",
+                format!(
+                    "public, max-age={}, must-revalidate",
+                    state.eth_head_cache_maxage
+                ),
+            )],
+            Json(json!(HeadResponseV2 {
+                slot: *slot,
+                block_number: *block,
+                block_hash: *hash,
+                timestamp: *timestamp,
+                timestamp_diff: now - *timestamp
+            })),
+        )
+    } else {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            [("Cache-Control", "max-age=60, must-revalidate".to_string())],
+            Json(json!({ "error": "Not found"})),
+        )
+    }
+}
+
+/// get_eth_head returns Ethereum head with the latest slot/block that is stored and a time.
+#[inline(always)]
 async fn get_eth_head(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let pallet = "Vector";
     let head = "Head";
@@ -675,12 +721,14 @@ async fn main() {
             .unwrap_or(172800),
         beaconchain_api_key: env::var("BEACONCHAIN_API_KEY").unwrap_or("".to_owned()),
     });
+    tracing::info!("Config: {shared_state:?}");
 
     let app = Router::new()
         .route("/", get(alive))
         .route("/info", get(info))
         .route("/eth/proof/:block_hash", get(get_eth_proof))
         .route("/eth/head", get(get_eth_head))
+        .route("/eth/head_v2", get(get_eth_head_v2))
         .route("/avl/head", get(get_avl_head))
         .route("/avl/proof/:block_hash/:message_id", get(get_avl_proof))
         .route("/beacon/slot/:slot_number", get(get_beacon_slot))
@@ -691,7 +739,7 @@ async fn main() {
                 .allow_methods(vec![Method::GET])
                 .allow_origin(Any),
         )
-        .with_state(shared_state);
+        .with_state(shared_state.clone());
 
     let host = env::var("HOST").unwrap_or("0.0.0.0".to_owned());
     let port = env::var("PORT").unwrap_or("8080".to_owned());
@@ -699,6 +747,109 @@ async fn main() {
         .await
         .unwrap();
 
+    tokio::spawn(async move {
+        tracing::info!("Starting head tracking task");
+        if let Err(e) = track_slot_avail_task(shared_state.clone()).await {
+            tracing::error!("Error occurred, cannot continue: {e:#}");
+            process::exit(-1);
+        }
+    });
     tracing::info!("🚀 Listening on {} port {}", host, port);
     axum::serve(listener, app).await.unwrap();
+}
+
+lazy_static! {
+    static ref SLOT_BLOCK_HEAD: Mutex<Option<(u64, u64, B256, u64)>> = Mutex::new(None);
+}
+
+async fn track_slot_avail_task(state: Arc<AppState>) -> Result<()> {
+    let pallet = "Vector";
+    let head = "Head";
+    let timestamp = "Timestamps";
+
+    let do_work = || {
+        let state = state.clone();
+        async move {
+            let _r: Result<()> = loop {
+                let finalized_block_hash_str: String = state
+                    .avail_client
+                    .request("chain_getFinalizedHead", rpc_params![])
+                    .await
+                    .context("finalized head")?;
+
+                let head_key = format!(
+                    "0x{}{}",
+                    hex::encode(twox_128(pallet.as_bytes())),
+                    hex::encode(twox_128(head.as_bytes()))
+                );
+                let head_str: String = state
+                    .avail_client
+                    .request(
+                        "state_getStorage",
+                        rpc_params![head_key, finalized_block_hash_str.clone()],
+                    )
+                    .await
+                    .context("head key")?;
+
+                let slot_from_hex =
+                    sp_core::bytes::from_hex(head_str.as_str()).context("decode slot")?;
+                let slot: u64 =
+                    Decode::decode(&mut slot_from_hex.as_slice()).context("slot decode 2")?;
+
+                let timestamp_key = format!(
+                    "0x{}{}{}",
+                    hex::encode(twox_128(pallet.as_bytes())),
+                    hex::encode(twox_128(timestamp.as_bytes())),
+                    &head_str[2..].to_string()
+                );
+
+                let timestamp_str: String = state
+                    .avail_client
+                    .request(
+                        "state_getStorage",
+                        rpc_params![timestamp_key, finalized_block_hash_str],
+                    )
+                    .await
+                    .context("timestamp key")?;
+
+                let timestamp_from_hex =
+                    sp_core::bytes::from_hex(timestamp_str.as_str()).context("timestamp decode")?;
+
+                let timestamp: u64 = Decode::decode(&mut timestamp_from_hex.as_slice())
+                    .context("timestamp decode 2")?;
+
+                let slot_block_head = SLOT_BLOCK_HEAD.lock().await;
+                if let Some((old_slot, _old_block, _old_hash, _old_timestamp)) =
+                    slot_block_head.as_ref()
+                {
+                    if old_slot == &slot {
+                        tokio::time::sleep(Duration::from_secs(60 * 10)).await;
+                        continue;
+                    }
+                }
+
+                drop(slot_block_head);
+
+                let resp = reqwest::get(format!("{}/{}", state.beaconchain_base_url, slot))
+                    .await
+                    .context("beacon get")?;
+                let res = resp
+                    .json::<BeaconAPIResponse>()
+                    .await
+                    .context("beacon decode")?;
+                let bl = res.data.exec_block_number;
+                let h = res.data.exec_block_hash;
+                let mut slot_block_head = SLOT_BLOCK_HEAD.lock().await;
+                tracing::info!("Beacon mapping: {slot}:{bl}");
+                *slot_block_head = Some((slot, bl as u64, h, timestamp));
+
+                tokio::time::sleep(Duration::from_secs(60 * 5)).await;
+            };
+            _r
+        }
+    };
+
+    do_work.retry(&ExponentialBuilder::default()).await?;
+
+    Ok(())
 }
