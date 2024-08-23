@@ -29,6 +29,23 @@ RUSTFLAGS="-C target-cpu=native" cargo run --profile maxperf
 
 * The bridge API operates on the 8080 port by default (can be configured).
 
+* Supported API versions on the server:
+
+    * Request
+
+      `GET /versions`
+
+      ```bash
+      # curl <endpoint URL>/versions
+      curl http://localhost:8080/versions
+      ```
+
+    * Response
+
+      ```json
+      ["v1"]
+      ```
+
 ### Liveness of the server
 
 * To verify that the API is live, you can query the root like:
@@ -52,11 +69,11 @@ RUSTFLAGS="-C target-cpu=native" cargo run --profile maxperf
 
       * Request
 
-        `GET /info`
+        `GET /v1/info`
 
         ```bash
         # curl <endpoint URL>
-        curl http://localhost:8080/info
+        curl http://localhost:8080/v1/info
         ```
 
       * Response
@@ -76,11 +93,11 @@ RUSTFLAGS="-C target-cpu=native" cargo run --profile maxperf
 
 * To get the latest Ethereum block number, query:
     * Request
-      `GET /eth/head`
+      `GET /v1/eth/head`
 
       ```bash
-      # curl <endpoint URL>/eth/head
-      curl http://localhost:8080/eth/head
+      # curl <endpoint URL>/v1/eth/head
+      curl http://localhost:8080/v1/eth/head
       ```
         * Response
 
@@ -96,11 +113,11 @@ RUSTFLAGS="-C target-cpu=native" cargo run --profile maxperf
 
 * To get the latest Avail block number, query:
     * Request
-      `GET /avl/head`
+      `GET /v1/avl/head`
 
       ```bash
-      # curl <endpoint URL>/avl/head
-      curl http://localhost:8080/avl/head
+      # curl <endpoint URL>/v1/avl/head
+      curl http://localhost:8080/v1/avl/head
       ```
         * Response
 
@@ -120,11 +137,11 @@ RUSTFLAGS="-C target-cpu=native" cargo run --profile maxperf
 
     * Request
 
-      `GET /eth/proof/:blockhash?index=`
+      `GET /v1/eth/proof/:blockhash?index=`
 
       ```bash
-      # curl "<endpoint URL>/eth/proof/<blockhash>?index=<tx_index>"
-      curl "http://localhost:8080/eth/proof/0x5bc7bd3a4793132007d6d0d9c55dc2ded2fe721a49bd771c1d290e6a3c6ec237?index=5"
+      # curl "<endpoint URL>/v1/eth/proof/<blockhash>?index=<tx_index>"
+      curl "http://localhost:8080/v1/eth/proof/0x5bc7bd3a4793132007d6d0d9c55dc2ded2fe721a49bd771c1d290e6a3c6ec237?index=5"
       ```
 
       * Response
@@ -172,15 +189,15 @@ RUSTFLAGS="-C target-cpu=native" cargo run --profile maxperf
 
 ### Get Account/Storage proofs
 
-* To get a proof, simply query the `/avl/proof/:message_id` endpoint with the message id:
+* To get a proof, simply query the `/v1/avl/proof/:message_id` endpoint with the message id:
 
   * Request
 
-    `GET /avl/proof/:block_hash/:messageId`
+    `GET /v1/avl/proof/:block_hash/:messageId`
 
       ```bash
-      # curl "<endpoint URL>/avl/proof/<blockhash>/<messageId>"
-      curl "http://localhost:8080/avl/proof/0x7963d8403d137cb5560e2436df07c233d18030b5f3f0c61b85083e2a8f2b5e55/1"
+      # curl "<endpoint URL>/v1/avl/proof/<blockhash>/<messageId>"
+      curl "http://localhost:8080/v1/avl/proof/0x7963d8403d137cb5560e2436df07c233d18030b5f3f0c61b85083e2a8f2b5e55/1"
       ```
 
       * Response
@@ -205,28 +222,6 @@ RUSTFLAGS="-C target-cpu=native" cargo run --profile maxperf
          ]
       }   
      ```
-
-### Map slot to Ethereum block number
-
-* To map Ethereum slot to a block number:
-
-    * Request
-
-      `GET /beacon/slot/:slot_number`
-
-      ```bash
-      # curl <endpoint URL>/beacon/slot/<slotNumber>
-      curl http://localhost:8080/beacon/slot/4448512
-      ```
-
-    * Response
-
-      ```json
-      {
-        "blockHash":"0x5282299b298fe1d7238f1a48aa0f5e7cc19ccbcdeeba020b610db78abeb0d52b",
-        "blockNumber":5380093
-      }
-      ```
 
 ### Examples of using bridge api 
 

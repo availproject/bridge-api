@@ -12,7 +12,6 @@ use backon::ExponentialBuilder;
 use backon::Retryable;
 use chrono::Utc;
 use http::Method;
-use jsonrpsee::core::Error;
 use jsonrpsee::{
     core::client::ClientT,
     http_client::{HttpClient, HttpClientBuilder},
@@ -25,8 +24,8 @@ use serde_json::{json, Value};
 use sha3::{Digest, Keccak256};
 use sp_core::Decode;
 use sp_io::hashing::twox_128;
+use std::sync::Arc;
 use std::{env, process, time::Duration};
-use std::{sync::Arc, time};
 #[cfg(not(target_env = "msvc"))]
 use tikv_jemallocator::Jemalloc;
 use tokio::{join, sync::Mutex};
@@ -208,6 +207,11 @@ async fn info(State(state): State<Arc<AppState>>) -> Result<Json<Value>, StatusC
         "bridgeContractAddress" : state.bridge_contract_address,
         "availChainName": state.avail_chain_name,
     })))
+}
+
+#[inline(always)]
+async fn versions(State(state): State<Arc<AppState>>) -> Result<Json<Value>, StatusCode> {
+    Ok(Json(json!(["v1"])))
 }
 
 #[inline(always)]
@@ -393,75 +397,9 @@ async fn get_avl_proof(
     }
 }
 
-/// Creates a request to the beaconcha service for mapping slot to the block number.
-#[inline(always)]
-async fn get_beacon_slot(
-    Path(slot): Path<U256>,
-    State(state): State<Arc<AppState>>,
-) -> impl IntoResponse {
-    let resp = state
-        .request_client
-        .get(format!("{}/{}", state.beaconchain_base_url, slot))
-        .header("apikey", state.beaconchain_api_key.clone())
-        .send()
-        .await;
-
-    match resp {
-        Ok(ok) => {
-            let response_data = ok.json::<BeaconAPIResponse>().await;
-            match response_data {
-                Ok(rsp_data) => {
-                    if rsp_data.status == "OK" {
-                        (
-                            StatusCode::OK,
-                            [(
-                                "Cache-Control",
-                                format!(
-                                    "public, max-age={}, immutable",
-                                    state.slot_mapping_cache_maxage
-                                ),
-                            )],
-                            Json(json!(SlotMappingResponse {
-                                block_number: rsp_data.data.exec_block_number,
-                                block_hash: rsp_data.data.exec_block_hash
-                            })),
-                        )
-                    } else {
-                        tracing::error!(
-                            "❌ Beacon API returned unsuccessfully: {:?}",
-                            rsp_data.status
-                        );
-                        (
-                            StatusCode::INTERNAL_SERVER_ERROR,
-                            [("Cache-Control", "max-age=60, must-revalidate".to_string())],
-                            Json(json!({ "error": "Cannot fetch slot data"})),
-                        )
-                    }
-                }
-                Err(err) => {
-                    tracing::error!("❌ Cannot get beacon API response data: {:?}", err);
-                    (
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        [("Cache-Control", "max-age=60, must-revalidate".to_string())],
-                        Json(json!({ "error": err.to_string()})),
-                    )
-                }
-            }
-        }
-        Err(err) => {
-            tracing::error!("❌ Cannot get beacon API data: {:?}", err);
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                [("Cache-Control", "max-age=60, must-revalidate".to_string())],
-                Json(json!({ "error": err.to_string()})),
-            )
-        }
-    }
-}
-
 /// get_eth_head returns Ethereum head with the latest slot/block that is stored and a time.
 #[inline(always)]
-async fn get_eth_head_v2(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+async fn get_eth_head(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let slot_block_head = SLOT_BLOCK_HEAD.lock().await;
     if let Some((slot, block, hash, timestamp)) = slot_block_head.as_ref() {
         let now = Utc::now().timestamp() as u64;
@@ -488,127 +426,6 @@ async fn get_eth_head_v2(State(state): State<Arc<AppState>>) -> impl IntoRespons
             [("Cache-Control", "max-age=60, must-revalidate".to_string())],
             Json(json!({ "error": "Not found"})),
         )
-    }
-}
-
-/// get_eth_head returns Ethereum head with the latest slot/block that is stored and a time.
-#[inline(always)]
-async fn get_eth_head(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    let pallet = "Vector";
-    let head = "Head";
-    let timestamp = "Timestamps";
-
-    let head_key = format!(
-        "0x{}{}",
-        hex::encode(twox_128(pallet.as_bytes())),
-        hex::encode(twox_128(head.as_bytes()))
-    );
-
-    let finalized_block_hash_response: Result<String, Error> = state
-        .avail_client
-        .request("chain_getFinalizedHead", rpc_params![])
-        .await;
-
-    match finalized_block_hash_response {
-        Ok(finalized_block_hash) => {
-            let head_response: Result<String, Error> = state
-                .avail_client
-                .request(
-                    "state_getStorage",
-                    rpc_params![head_key, finalized_block_hash.clone()],
-                )
-                .await;
-            match head_response {
-                Ok(slot_storage_response) => {
-                    let timestamp_key = format!(
-                        "0x{}{}{}",
-                        hex::encode(twox_128(pallet.as_bytes())),
-                        hex::encode(twox_128(timestamp.as_bytes())),
-                        &slot_storage_response[2..].to_string()
-                    );
-                    let timestamp_response: Result<String, Error> = state
-                        .avail_client
-                        .request(
-                            "state_getStorage",
-                            rpc_params![timestamp_key, finalized_block_hash.clone()],
-                        )
-                        .await;
-                    match timestamp_response {
-                        Ok(timestamp_storage_response) => {
-                            // decode response from storage into readable values
-                            let slot_from_hex =
-                                sp_core::bytes::from_hex(slot_storage_response.as_str()).unwrap();
-                            let slot_input = &mut slot_from_hex.as_slice();
-                            let slot: u64 = Decode::decode(slot_input).unwrap();
-                            let timestamp_from_hex =
-                                sp_core::bytes::from_hex(timestamp_storage_response.as_str())
-                                    .unwrap();
-                            let timestamp_input = &mut timestamp_from_hex.as_slice();
-                            let timestamp: u64 = Decode::decode(timestamp_input).unwrap();
-                            let now = Utc::now().timestamp() as u64;
-                            (
-                                StatusCode::OK,
-                                [(
-                                    "Cache-Control",
-                                    format!(
-                                        "public, max-age={}, must-revalidate",
-                                        state.eth_head_cache_maxage
-                                    ),
-                                )],
-                                Json(json!(HeadResponse {
-                                    slot,
-                                    timestamp,
-                                    timestamp_diff: (now - timestamp),
-                                })),
-                            )
-                        }
-                        Err(err) => {
-                            tracing::error!("❌ Cannot get timestamp storage: {:?}", err);
-                            if err.to_string().ends_with("status code: 429") {
-                                (
-                                    StatusCode::TOO_MANY_REQUESTS,
-                                    [("Cache-Control", "max-age=60, must-revalidate".to_string())],
-                                    Json(json!({ "error": err.to_string()})),
-                                )
-                            } else {
-                                (
-                                    StatusCode::INTERNAL_SERVER_ERROR,
-                                    [("Cache-Control", "max-age=60, must-revalidate".to_string())],
-                                    Json(json!({ "error": err.to_string()})),
-                                )
-                            }
-                        }
-                    }
-                }
-                Err(err) => {
-                    tracing::error!("❌ Cannot get head storage: {:?}", err.to_string());
-                    if err.to_string().ends_with("status code: 429") {
-                        (
-                            StatusCode::TOO_MANY_REQUESTS,
-                            [("Cache-Control", "max-age=60, must-revalidate".to_string())],
-                            Json(json!({ "error": err.to_string()})),
-                        )
-                    } else {
-                        (
-                            StatusCode::INTERNAL_SERVER_ERROR,
-                            [("Cache-Control", "max-age=60, must-revalidate".to_string())],
-                            Json(json!({ "error": err.to_string()})),
-                        )
-                    }
-                }
-            }
-        }
-        Err(err) => {
-            tracing::error!(
-                "Cannot get the latest finalized block hash: {:?}",
-                err.to_string()
-            );
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                [("Cache-Control", "max-age=60, must-revalidate".to_string())],
-                Json(json!({ "error": err.to_string()})),
-            )
-        }
     }
 }
 
@@ -725,13 +542,12 @@ async fn main() {
 
     let app = Router::new()
         .route("/", get(alive))
-        .route("/info", get(info))
-        .route("/eth/proof/:block_hash", get(get_eth_proof))
-        .route("/eth/head", get(get_eth_head))
-        .route("/eth/head_v2", get(get_eth_head_v2))
-        .route("/avl/head", get(get_avl_head))
-        .route("/avl/proof/:block_hash/:message_id", get(get_avl_proof))
-        .route("/beacon/slot/:slot_number", get(get_beacon_slot))
+        .route("/versions", get(versions))
+        .route("/v1/info", get(info))
+        .route("/v1/eth/proof/:block_hash", get(get_eth_proof))
+        .route("/v1/eth/head", get(get_eth_head))
+        .route("/v1/avl/head", get(get_avl_head))
+        .route("/v1/avl/proof/:block_hash/:message_id", get(get_avl_proof))
         .layer(TraceLayer::new_for_http())
         .layer(CompressionLayer::new())
         .layer(
@@ -849,7 +665,12 @@ async fn track_slot_avail_task(state: Arc<AppState>) -> Result<()> {
         }
     };
 
-    do_work.retry(&ExponentialBuilder::default()).await?;
+    let retry_settings = ExponentialBuilder::default()
+        .with_min_delay(Duration::from_secs(5))
+        .with_max_delay(Duration::from_secs(60))
+        .with_max_times(10)
+        .with_factor(2.0);
+    do_work.retry(&retry_settings).await?;
 
     Ok(())
 }
