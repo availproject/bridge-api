@@ -28,7 +28,7 @@ use std::sync::Arc;
 use std::{env, process, time::Duration};
 #[cfg(not(target_env = "msvc"))]
 use tikv_jemallocator::Jemalloc;
-use tokio::{join, sync::Mutex};
+use tokio::{join, sync::RwLock};
 use tower_http::{
     compression::CompressionLayer,
     cors::{Any, CorsLayer},
@@ -55,8 +55,6 @@ struct AppState {
     avl_head_cache_maxage: u16,
     avl_proof_cache_maxage: u32,
     eth_proof_cache_maxage: u32,
-    slot_mapping_cache_maxage: u32,
-    beaconchain_api_key: String,
 }
 
 #[derive(Deserialize)]
@@ -400,7 +398,7 @@ async fn get_avl_proof(
 /// get_eth_head returns Ethereum head with the latest slot/block that is stored and a time.
 #[inline(always)]
 async fn get_eth_head(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    let slot_block_head = SLOT_BLOCK_HEAD.lock().await;
+    let slot_block_head = SLOT_BLOCK_HEAD.read().await;
     if let Some((slot, block, hash, timestamp)) = slot_block_head.as_ref() {
         let now = Utc::now().timestamp() as u64;
         (
@@ -532,13 +530,7 @@ async fn main() {
             .ok()
             .and_then(|proof_response| proof_response.parse::<u32>().ok())
             .unwrap_or(172800),
-        slot_mapping_cache_maxage: env::var("SLOT_MAPPING_CACHE_MAXAGE")
-            .ok()
-            .and_then(|slot_mapping_response| slot_mapping_response.parse::<u32>().ok())
-            .unwrap_or(172800),
-        beaconchain_api_key: env::var("BEACONCHAIN_API_KEY").unwrap_or("".to_owned()),
     });
-    tracing::info!("Config: {shared_state:?}");
 
     let app = Router::new()
         .route("/", get(alive))
@@ -575,7 +567,7 @@ async fn main() {
 }
 
 lazy_static! {
-    static ref SLOT_BLOCK_HEAD: Mutex<Option<(u64, u64, B256, u64)>> = Mutex::new(None);
+    static ref SLOT_BLOCK_HEAD: RwLock<Option<(u64, u64, B256, u64)>> = RwLock::new(None);
 }
 
 async fn track_slot_avail_task(state: Arc<AppState>) -> Result<()> {
@@ -634,7 +626,7 @@ async fn track_slot_avail_task(state: Arc<AppState>) -> Result<()> {
                 let timestamp: u64 = Decode::decode(&mut timestamp_from_hex.as_slice())
                     .context("timestamp decode 2")?;
 
-                let slot_block_head = SLOT_BLOCK_HEAD.lock().await;
+                let slot_block_head = SLOT_BLOCK_HEAD.read().await;
                 if let Some((old_slot, _old_block, _old_hash, _old_timestamp)) =
                     slot_block_head.as_ref()
                 {
@@ -655,7 +647,7 @@ async fn track_slot_avail_task(state: Arc<AppState>) -> Result<()> {
                     .context("beacon decode")?;
                 let bl = res.data.exec_block_number;
                 let h = res.data.exec_block_hash;
-                let mut slot_block_head = SLOT_BLOCK_HEAD.lock().await;
+                let mut slot_block_head = SLOT_BLOCK_HEAD.write().await;
                 tracing::info!("Beacon mapping: {slot}:{bl}");
                 *slot_block_head = Some((slot, bl as u64, h, timestamp));
 
