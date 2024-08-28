@@ -55,6 +55,8 @@ struct AppState {
     avl_head_cache_maxage: u16,
     avl_proof_cache_maxage: u32,
     eth_proof_cache_maxage: u32,
+    slot_mapping_cache_maxage: u32,
+    beaconchain_api_key: String,
 }
 
 #[derive(Deserialize)]
@@ -180,6 +182,14 @@ struct HeadResponseV2 {
     pub timestamp_diff: u64,
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct HeadResponseLegacy {
+    pub slot: u64,
+    pub timestamp: u64,
+    pub timestamp_diff: u64,
+}
+
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct RangeBlocks {
@@ -208,7 +218,7 @@ async fn info(State(state): State<Arc<AppState>>) -> Result<Json<Value>, StatusC
 }
 
 #[inline(always)]
-async fn versions(State(state): State<Arc<AppState>>) -> Result<Json<Value>, StatusCode> {
+async fn versions(State(_state): State<Arc<AppState>>) -> Result<Json<Value>, StatusCode> {
     Ok(Json(json!(["v1"])))
 }
 
@@ -395,6 +405,72 @@ async fn get_avl_proof(
     }
 }
 
+/// Creates a request to the beaconcha service for mapping slot to the block number.
+#[inline(always)]
+async fn get_beacon_slot(
+    Path(slot): Path<U256>,
+    State(state): State<Arc<AppState>>,
+) -> impl IntoResponse {
+    let resp = state
+        .request_client
+        .get(format!("{}/{}", state.beaconchain_base_url, slot))
+        .header("apikey", state.beaconchain_api_key.clone())
+        .send()
+        .await;
+
+    match resp {
+        Ok(ok) => {
+            let response_data = ok.json::<BeaconAPIResponse>().await;
+            match response_data {
+                Ok(rsp_data) => {
+                    if rsp_data.status == "OK" {
+                        (
+                            StatusCode::OK,
+                            [(
+                                "Cache-Control",
+                                format!(
+                                    "public, max-age={}, immutable",
+                                    state.slot_mapping_cache_maxage
+                                ),
+                            )],
+                            Json(json!(SlotMappingResponse {
+                                block_number: rsp_data.data.exec_block_number,
+                                block_hash: rsp_data.data.exec_block_hash
+                            })),
+                        )
+                    } else {
+                        tracing::error!(
+                            "❌ Beacon API returned unsuccessfully: {:?}",
+                            rsp_data.status
+                        );
+                        (
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            [("Cache-Control", "max-age=60, must-revalidate".to_string())],
+                            Json(json!({ "error": "Cannot fetch slot data"})),
+                        )
+                    }
+                }
+                Err(err) => {
+                    tracing::error!("❌ Cannot get beacon API response data: {:?}", err);
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        [("Cache-Control", "max-age=60, must-revalidate".to_string())],
+                        Json(json!({ "error": err.to_string()})),
+                    )
+                }
+            }
+        }
+        Err(err) => {
+            tracing::error!("❌ Cannot get beacon API data: {:?}", err);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                [("Cache-Control", "max-age=60, must-revalidate".to_string())],
+                Json(json!({ "error": err.to_string()})),
+            )
+        }
+    }
+}
+
 /// get_eth_head returns Ethereum head with the latest slot/block that is stored and a time.
 #[inline(always)]
 async fn get_eth_head(State(state): State<Arc<AppState>>) -> impl IntoResponse {
@@ -414,6 +490,36 @@ async fn get_eth_head(State(state): State<Arc<AppState>>) -> impl IntoResponse {
                 slot: *slot,
                 block_number: *block,
                 block_hash: *hash,
+                timestamp: *timestamp,
+                timestamp_diff: now - *timestamp
+            })),
+        )
+    } else {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            [("Cache-Control", "max-age=60, must-revalidate".to_string())],
+            Json(json!({ "error": "Not found"})),
+        )
+    }
+}
+
+/// get_eth_head returns Ethereum head with the latest slot/block that is stored and a time.
+#[inline(always)]
+async fn get_eth_head_legacy(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    let slot_block_head = SLOT_BLOCK_HEAD.read().await;
+    if let Some((slot, _block, _hash, timestamp)) = slot_block_head.as_ref() {
+        let now = Utc::now().timestamp() as u64;
+        (
+            StatusCode::OK,
+            [(
+                "Cache-Control",
+                format!(
+                    "public, max-age={}, must-revalidate",
+                    state.eth_head_cache_maxage
+                ),
+            )],
+            Json(json!(HeadResponseLegacy {
+                slot: *slot,
                 timestamp: *timestamp,
                 timestamp_diff: now - *timestamp
             })),
@@ -530,16 +636,27 @@ async fn main() {
             .ok()
             .and_then(|proof_response| proof_response.parse::<u32>().ok())
             .unwrap_or(172800),
+        slot_mapping_cache_maxage: env::var("SLOT_MAPPING_CACHE_MAXAGE")
+            .ok()
+            .and_then(|slot_mapping_response| slot_mapping_response.parse::<u32>().ok())
+            .unwrap_or(172800),
+        beaconchain_api_key: env::var("BEACONCHAIN_API_KEY").unwrap_or("".to_owned()),
     });
 
     let app = Router::new()
         .route("/", get(alive))
         .route("/versions", get(versions))
         .route("/v1/info", get(info))
+        .route("/info", get(info))
         .route("/v1/eth/proof/:block_hash", get(get_eth_proof))
+        .route("/eth/proof/:block_hash", get(get_eth_proof))
         .route("/v1/eth/head", get(get_eth_head))
+        .route("/eth/head", get(get_eth_head_legacy))
         .route("/v1/avl/head", get(get_avl_head))
+        .route("/avl/head", get(get_avl_head))
         .route("/v1/avl/proof/:block_hash/:message_id", get(get_avl_proof))
+        .route("/avl/proof/:block_hash/:message_id", get(get_avl_proof))
+        .route("/beacon/slot/:slot_number", get(get_beacon_slot))
         .layer(TraceLayer::new_for_http())
         .layer(CompressionLayer::new())
         .layer(
@@ -578,7 +695,7 @@ async fn track_slot_avail_task(state: Arc<AppState>) -> Result<()> {
     let do_work = || {
         let state = state.clone();
         async move {
-            let _r: Result<()> = loop {
+            loop {
                 let finalized_block_hash_str: String = state
                     .avail_client
                     .request("chain_getFinalizedHead", rpc_params![])
@@ -652,8 +769,8 @@ async fn track_slot_avail_task(state: Arc<AppState>) -> Result<()> {
                 *slot_block_head = Some((slot, bl as u64, h, timestamp));
 
                 tokio::time::sleep(Duration::from_secs(60 * 5)).await;
-            };
-            _r
+            }
+            Ok::<(), anyhow::Error>(())
         }
     };
 

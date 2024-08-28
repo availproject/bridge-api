@@ -223,6 +223,28 @@ RUSTFLAGS="-C target-cpu=native" cargo run --profile maxperf
       }   
      ```
 
+### Map slot to Ethereum block number (Deprecated)
+
+* To map Ethereum slot to a block number:
+
+    * Request
+
+      `GET /beacon/slot/:slot_number`
+
+      ```bash
+      # curl <endpoint URL>/beacon/slot/<slotNumber>
+      curl http://localhost:8080/beacon/slot/4448512
+      ```
+
+    * Response
+
+      ```json
+      {
+        "blockHash":"0x5282299b298fe1d7238f1a48aa0f5e7cc19ccbcdeeba020b610db78abeb0d52b",
+        "blockNumber":5380093
+      }
+      ```
+
 ### Examples of using bridge api 
 
 *  We have prepared a set of examples written in Rust and Typescript to help you understand how to use bridge api. You can explore these examples by visiting our [code examples repository](https://github.com/availproject/avail-bridge-examples).
