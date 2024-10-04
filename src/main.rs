@@ -767,6 +767,7 @@ async fn track_slot_avail_task(state: Arc<AppState>) -> Result<()> {
                 let mut slot_block_head = SLOT_BLOCK_HEAD.write().await;
                 tracing::info!("Beacon mapping: {slot}:{bl}");
                 *slot_block_head = Some((slot, bl as u64, h, timestamp));
+                drop(slot_block_head);
 
                 tokio::time::sleep(Duration::from_secs(60 * 5)).await;
             }
