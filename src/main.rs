@@ -1,3 +1,10 @@
+mod models;
+mod schema;
+use diesel::{r2d2, QueryDsl, SelectableHelper};
+
+use crate::models::{AvailSend, EthereumSend, StatusEnum};
+use crate::schema::avail_sends::dsl::avail_sends;
+use crate::schema::ethereum_sends::dsl::ethereum_sends;
 use alloy_primitives::{hex, B256, U256};
 use anyhow::{Context, Result};
 use avail_core::data_proof::AddressedMessage;
@@ -10,7 +17,10 @@ use axum::{
 };
 use backon::ExponentialBuilder;
 use backon::Retryable;
-use chrono::Utc;
+use chrono::{NaiveDateTime, Utc};
+use diesel::r2d2::ConnectionManager;
+use diesel::ExpressionMethods;
+use diesel::{PgConnection, RunQueryDsl};
 use http::Method;
 use jsonrpsee::{
     core::client::ClientT,
@@ -21,8 +31,9 @@ use lazy_static::lazy_static;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use serde_with::serde_as;
 use sha3::{Digest, Keccak256};
-use sp_core::Decode;
+use sp_core::{Decode, H160, H256};
 use sp_io::hashing::twox_128;
 use std::sync::Arc;
 use std::{env, process, time::Duration};
@@ -57,6 +68,7 @@ struct AppState {
     eth_proof_cache_maxage: u32,
     slot_mapping_cache_maxage: u32,
     beaconchain_api_key: String,
+    connection_pool: r2d2::Pool<ConnectionManager<PgConnection>>,
 }
 
 #[derive(Deserialize)]
@@ -222,6 +234,146 @@ async fn versions(State(_state): State<Arc<AppState>>) -> Result<Json<Value>, St
     Ok(Json(json!(["v1"])))
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct TransactionQueryParams {
+    eth_address: Option<H160>,
+    avail_address: Option<H256>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde_as]
+#[serde(rename_all = "camelCase")]
+pub struct TransactionData {
+    pub message_id: i64,
+    pub status: StatusEnum,
+    pub source_transaction_hash: String,
+    pub source_block_number: i64,
+    pub source_block_hash: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_transaction_index: Option<i64>,
+    #[serde_as(as = "TimestampSeconds")]
+    pub source_timestamp: NaiveDateTime,
+    pub token_id: String,
+    pub destination_block_number: Option<i64>,
+    pub destination_block_hash: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub destination_transaction_index: Option<i64>,
+    #[serde_as(as = "Option<TimestampSeconds>")]
+    pub destination_timestamp: Option<NaiveDateTime>,
+    pub depositor_address: String,
+    pub receiver_address: String,
+    pub amount: String,
+}
+
+#[derive(Debug, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TransactionResult {
+    pub avail_send: Vec<TransactionData>,
+    pub eth_send: Vec<TransactionData>,
+}
+
+fn map_ethereum_send_to_transaction_result(send: EthereumSend) -> TransactionData {
+    TransactionData {
+        message_id: send.message_id,
+        status: send.status,
+        source_transaction_hash: send.source_transaction_hash,
+        source_block_number: send.source_block_number,
+        source_block_hash: send.source_block_hash,
+        source_transaction_index: None,
+        source_timestamp: send.source_timestamp,
+        token_id: send.token_id,
+        destination_block_number: send.destination_block_number,
+        destination_block_hash: send.destination_block_hash,
+        destination_transaction_index: send.destination_transaction_index,
+        destination_timestamp: send.destination_timestamp,
+        depositor_address: send.depositor_address,
+        receiver_address: send.receiver_address,
+        amount: send.amount,
+        // claim_type: send.claim_type,
+    }
+}
+
+// Function to map AvailSend to TransactionResult
+fn map_avail_send_to_transaction_result(send: AvailSend) -> TransactionData {
+    TransactionData {
+        message_id: send.message_id,
+        status: send.status,
+        source_transaction_hash: send.source_transaction_hash,
+        source_block_number: send.source_block_number,
+        source_block_hash: send.source_block_hash,
+        source_transaction_index: Some(send.source_transaction_index),
+        source_timestamp: send.source_timestamp,
+        token_id: send.token_id,
+        destination_block_number: send.destination_block_number,
+        destination_block_hash: send.destination_block_hash,
+        destination_transaction_index: None,
+        destination_timestamp: send.destination_timestamp,
+        depositor_address: send.depositor_address,
+        receiver_address: send.receiver_address,
+        amount: send.amount,
+        // claim_type: send.claim_type,
+    }
+}
+
+#[inline(always)]
+async fn transactions(
+    Query(address_query): Query<TransactionQueryParams>,
+    State(state): State<Arc<AppState>>,
+) -> impl IntoResponse {
+    if address_query.eth_address.is_none() && address_query.avail_address.is_none() {
+        tracing::error!("Query params not provided.");
+        return (
+            StatusCode::BAD_REQUEST,
+            [("Cache-Control", "max-age=60, must-revalidate".to_string())],
+            Json(json!({ "error": "Invalid request: Query params not provided"})),
+        );
+    }
+
+    let cloned_state = state.clone();
+    let mut conn = cloned_state
+        .connection_pool
+        .get_timeout(Duration::from_secs(1))
+        .unwrap();
+
+    // Initialize the result variables
+    let mut transaction_results: TransactionResult = TransactionResult::default();
+
+    // Return the combined results
+    if let Some(eth_address) = address_query.eth_address {
+        let ethereum_sends_results = ethereum_sends
+            .select(EthereumSend::as_select())
+            .filter(schema::ethereum_sends::depositor_address.eq(format!("{:?}", eth_address))) // Use the actual address
+            .order_by(schema::ethereum_sends::source_timestamp.desc())
+            .limit(500)
+            .load::<EthereumSend>(&mut conn)
+            .unwrap();
+        transaction_results.eth_send = ethereum_sends_results
+            .into_iter()
+            .map(map_ethereum_send_to_transaction_result)
+            .collect();
+    }
+    if let Some(avail_address) = address_query.avail_address {
+        let avail_sends_results = avail_sends
+            .select(AvailSend::as_select())
+            .filter(schema::avail_sends::depositor_address.eq(format!("{:?}", avail_address))) // Use the actual address
+            .order_by(schema::avail_sends::source_timestamp.desc())
+            .limit(500)
+            .load::<AvailSend>(&mut conn)
+            .unwrap();
+        transaction_results.avail_send = avail_sends_results
+            .into_iter()
+            .map(map_avail_send_to_transaction_result)
+            .collect()
+    }
+
+    (
+        StatusCode::OK,
+        [("Cache-Control", "max-age=60, must-revalidate".to_string())],
+        Json(json!(transaction_results)),
+    )
+}
+
 #[inline(always)]
 async fn get_eth_proof(
     Path(block_hash): Path<B256>,
@@ -347,13 +499,13 @@ async fn get_eth_proof(
 
 #[inline(always)]
 async fn get_avl_proof(
-    Path((block_hash, message_id)): Path<(B256, U256)>,
+    Path((block_hash, message_id_query)): Path<(B256, U256)>,
     State(state): State<Arc<AppState>>,
 ) -> impl IntoResponse {
     let mut hasher = Keccak256::new();
     hasher.update(
         [
-            message_id.to_be_bytes_vec(),
+            message_id_query.to_be_bytes_vec(),
             U256::from(1).to_be_bytes_vec(),
         ]
         .concat(),
@@ -594,6 +746,18 @@ async fn main() {
         .and_then(|max_request| max_request.parse::<usize>().ok())
         .unwrap_or(1024);
 
+    // Connection pool
+    let connections_string = format!(
+        "postgresql://{}:{}@{}/{}",
+        env::var("PG_USERNAME").unwrap_or("myuser".to_owned()),
+        env::var("PG_PASSWORD").unwrap_or("mypassword".to_owned()),
+        env::var("POSTGRES_URL").unwrap_or("localhost:5432".to_owned()),
+        env::var("POSTGRES_DB").unwrap_or("bridge-ui-indexer".to_owned()),
+    );
+    let connection_pool = r2d2::Pool::builder()
+        .build(ConnectionManager::<PgConnection>::new(connections_string))
+        .expect("Failed to create pool.");
+
     let shared_state = Arc::new(AppState {
         avail_client: HttpClientBuilder::default()
             .max_concurrent_requests(max_concurrent_request)
@@ -641,6 +805,7 @@ async fn main() {
             .and_then(|slot_mapping_response| slot_mapping_response.parse::<u32>().ok())
             .unwrap_or(172800),
         beaconchain_api_key: env::var("BEACONCHAIN_API_KEY").unwrap_or("".to_owned()),
+        connection_pool,
     });
 
     let app = Router::new()
@@ -655,6 +820,7 @@ async fn main() {
         .route("/v1/avl/head", get(get_avl_head))
         .route("/avl/head", get(get_avl_head))
         .route("/v1/avl/proof/:block_hash/:message_id", get(get_avl_proof))
+        .route("/v1/transactions", get(transactions))
         .route("/avl/proof/:block_hash/:message_id", get(get_avl_proof))
         .route("/beacon/slot/:slot_number", get(get_beacon_slot))
         .layer(TraceLayer::new_for_http())
