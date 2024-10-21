@@ -1,6 +1,6 @@
 [package]
 name = "bridge-api"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 authors = ["Avail Team"]
 default-run = "bridge-api"
@@ -10,29 +10,29 @@ publish = false
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-alloy-primitives = { version = "0.5.4", features = ["serde"] }
-axum = { version = "0.7.2", features = ["http2", "macros", "tracing"] }
-dotenvy = "0.15.7"
-jsonrpsee = { version = "0.20.3", features = ["http-client", "macros", "async-client"] }
-reqwest = { version = "0.11.23", features = ["json", "brotli"] }
-serde = { version = "1.0.193", features = ["derive"] }
-serde_json = { version = "1.0.108", features = ["arbitrary_precision"] }
-sha3 = "0.10.8"
-tokio = { version = "1.35.1", features = ["macros", "rt-multi-thread", "parking_lot"] }
-tower-http = { version = "0.5.0", features = ["trace", "compression-br", "cors"] }
-tracing = "0.1.40"
-tracing-subscriber = { version = "0.3.18", features = ["env-filter", "json"] }
-sp-io = "32.0.0"
-sp-core = "30.0.0"
-chrono = "0.4.34"
+alloy-primitives = { version = "0.8", features = ["serde"] }
+axum = { version = "0.7", features = ["http2", "macros", "tracing"] }
+dotenvy = "0.15"
+jsonrpsee = { version = "0.20", features = ["http-client", "macros", "async-client"] }
+reqwest = { version = "0.11", features = ["json", "brotli"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = { version = "1.0", features = ["arbitrary_precision"] }
+sha3 = "0.10"
+tokio = { version = "1.35", features = ["macros", "rt-multi-thread", "parking_lot"] }
+tower-http = { version = "0.5", features = ["trace", "compression-br", "cors"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+sp-io = "34.0"
+sp-core = "34.0"
+chrono = "0.4"
 avail-core = { git = "https://github.com/availproject/avail-core", branch = "main"}
-http = "1.1.0"
-backon = { version = "0.5.0", features = ["tokio-sleep"] }
+http = "1.1"
+backon = { version = "0.5", features = ["tokio-sleep"] }
 anyhow = "1"
 lazy_static = "1.5"
 
 [target.'cfg(not(target_env = "msvc"))'.dependencies]
-tikv-jemallocator = "0.5.4"
+tikv-jemallocator = "0.6"
 
 [profile.debug-fast]
 inherits = "release"
