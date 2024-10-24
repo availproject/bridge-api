@@ -81,7 +81,7 @@ struct IndexStruct {
 #[serde(rename_all = "camelCase")]
 struct KateQueryDataProofResponse {
     data_proof: DataProof,
-    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    #[serde(skip_serializing_if = "Option::is_none")]
     message: Option<AddressedMessage>,
 }
 
@@ -175,14 +175,6 @@ struct AggregatedResponse {
 struct EthProofResponse {
     account_proof: Vec<String>,
     storage_proof: Vec<String>,
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct HeadResponse {
-    pub slot: u64,
-    pub timestamp: u64,
-    pub timestamp_diff: u64,
 }
 
 #[derive(Serialize)]
@@ -971,6 +963,7 @@ async fn track_slot_avail_task(state: Arc<AppState>) -> Result<()> {
 
                 tokio::time::sleep(Duration::from_secs(60 * 5)).await;
             }
+            #[allow(unreachable_code)] // forces for type inference later on
             Ok::<(), anyhow::Error>(())
         }
     };
