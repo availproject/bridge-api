@@ -828,7 +828,9 @@ async fn main() {
             .unwrap_or(172800),
         transactions_cache_maxage: env::var("TRANSACTIONS_CACHE_MAXAGE")
             .ok()
-            .and_then(|transactions_mapping_response| transactions_mapping_response.parse::<u32>().ok())
+            .and_then(|transactions_mapping_response| {
+                transactions_mapping_response.parse::<u32>().ok()
+            })
             .unwrap_or(120),
         beaconchain_api_key: env::var("BEACONCHAIN_API_KEY").unwrap_or("".to_owned()),
         connection_pool,

@@ -24,7 +24,6 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 sp-io = "34.0"
 sp-core = "34.0"
-chrono = "0.4"
 avail-core = { git = "https://github.com/availproject/avail-core", branch = "main"}
 http = "1.1"
 backon = { version = "0.5", features = ["tokio-sleep"] }
