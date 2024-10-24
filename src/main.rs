@@ -67,6 +67,7 @@ struct AppState {
     avl_proof_cache_maxage: u32,
     eth_proof_cache_maxage: u32,
     slot_mapping_cache_maxage: u32,
+    transactions_cache_maxage: u32,
     beaconchain_api_key: String,
     connection_pool: r2d2::Pool<ConnectionManager<PgConnection>>,
 }
@@ -312,7 +313,6 @@ fn map_avail_send_to_transaction_result(send: AvailSend) -> TransactionData {
         depositor_address: send.depositor_address,
         receiver_address: send.receiver_address,
         amount: send.amount,
-        // claim_type: send.claim_type,
     }
 }
 
@@ -334,7 +334,7 @@ async fn transactions(
     let mut conn = cloned_state
         .connection_pool
         .get_timeout(Duration::from_secs(1))
-        .unwrap();
+        .expect("Get connection pool");
 
     // Initialize the result variables
     let mut transaction_results: TransactionResult = TransactionResult::default();
@@ -343,33 +343,63 @@ async fn transactions(
     if let Some(eth_address) = address_query.eth_address {
         let ethereum_sends_results = ethereum_sends
             .select(EthereumSend::as_select())
-            .filter(schema::ethereum_sends::depositor_address.eq(format!("{:?}", eth_address))) // Use the actual address
+            .filter(schema::ethereum_sends::depositor_address.eq(format!("{:?}", eth_address)))
             .order_by(schema::ethereum_sends::source_timestamp.desc())
             .limit(500)
-            .load::<EthereumSend>(&mut conn)
-            .unwrap();
-        transaction_results.eth_send = ethereum_sends_results
-            .into_iter()
-            .map(map_ethereum_send_to_transaction_result)
-            .collect();
+            .load::<EthereumSend>(&mut conn);
+
+        match ethereum_sends_results {
+            Ok(transaction) => {
+                transaction_results.eth_send = transaction
+                    .into_iter()
+                    .map(map_ethereum_send_to_transaction_result)
+                    .collect()
+            }
+            Err(e) => {
+                tracing::error!("Cannot get ethereum send transactions: {:?}", e);
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    [("Cache-Control", "max-age=60, must-revalidate".to_string())],
+                    Json(json!({ "error": e.to_string()})),
+                );
+            }
+        }
     }
     if let Some(avail_address) = address_query.avail_address {
         let avail_sends_results = avail_sends
             .select(AvailSend::as_select())
-            .filter(schema::avail_sends::depositor_address.eq(format!("{:?}", avail_address))) // Use the actual address
+            .filter(schema::avail_sends::depositor_address.eq(format!("{:?}", avail_address)))
             .order_by(schema::avail_sends::source_timestamp.desc())
             .limit(500)
-            .load::<AvailSend>(&mut conn)
-            .unwrap();
-        transaction_results.avail_send = avail_sends_results
-            .into_iter()
-            .map(map_avail_send_to_transaction_result)
-            .collect()
+            .load::<AvailSend>(&mut conn);
+
+        match avail_sends_results {
+            Ok(transaction) => {
+                transaction_results.avail_send = transaction
+                    .into_iter()
+                    .map(map_avail_send_to_transaction_result)
+                    .collect()
+            }
+            Err(e) => {
+                tracing::error!("Cannot get avail send transactions: {:?}", e);
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    [("Cache-Control", "max-age=60, must-revalidate".to_string())],
+                    Json(json!({ "error": e.to_string()})),
+                );
+            }
+        }
     }
 
     (
         StatusCode::OK,
-        [("Cache-Control", "max-age=60, must-revalidate".to_string())],
+        [(
+            "Cache-Control",
+            format!(
+                "public, max-age={}, immutable",
+                state.transactions_cache_maxage
+            ),
+        )],
         Json(json!(transaction_results)),
     )
 }
@@ -804,6 +834,10 @@ async fn main() {
             .ok()
             .and_then(|slot_mapping_response| slot_mapping_response.parse::<u32>().ok())
             .unwrap_or(172800),
+        transactions_cache_maxage: env::var("TRANSACTIONS_CACHE_MAXAGE")
+            .ok()
+            .and_then(|transactions_mapping_response| transactions_mapping_response.parse::<u32>().ok())
+            .unwrap_or(120),
         beaconchain_api_key: env::var("BEACONCHAIN_API_KEY").unwrap_or("".to_owned()),
         connection_pool,
     });
