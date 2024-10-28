@@ -283,7 +283,6 @@ fn map_ethereum_send_to_transaction_result(send: EthereumSend) -> TransactionDat
         depositor_address: send.depositor_address,
         receiver_address: send.receiver_address,
         amount: send.amount,
-        // claim_type: send.claim_type,
     }
 }
 
