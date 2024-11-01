@@ -1,4 +1,4 @@
-use crate::schema::sql_types::{ClaimType, Status};
+use crate::schema::sql_types::{Status};
 use chrono::NaiveDateTime;
 use diesel::pg::{Pg, PgValue};
 use diesel::serialize::{IsNull, Output};
@@ -49,34 +49,6 @@ impl FromSql<Status, Pg> for StatusEnum {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, FromSqlRow, AsExpression, Eq)]
-#[diesel(sql_type = ClaimType)]
-#[derive(Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub enum ClaimTypeEnum {
-    Auto,
-    Manual,
-}
-
-impl ToSql<ClaimType, Pg> for ClaimTypeEnum {
-    fn to_sql<'b>(&'b self, out: &mut Output<'b, '_, Pg>) -> serialize::Result {
-        match *self {
-            ClaimTypeEnum::Auto => out.write_all(b"AUTO")?,
-            ClaimTypeEnum::Manual => out.write_all(b"MANUAL")?,
-        }
-        Ok(IsNull::No)
-    }
-}
-
-impl FromSql<ClaimType, Pg> for ClaimTypeEnum {
-    fn from_sql(bytes: PgValue<'_>) -> deserialize::Result<Self> {
-        match bytes.as_bytes() {
-            b"AUTO" => Ok(ClaimTypeEnum::Auto),
-            b"MANUAL" => Ok(ClaimTypeEnum::Manual),
-            _ => Err("Unrecognized enum variant".into()),
-        }
-    }
-}
 #[derive(Queryable, Selectable, Insertable, Identifiable, Serialize)]
 #[serde(rename_all = "camelCase")]
 #[diesel(table_name = crate::schema::avail_sends)]
@@ -100,8 +72,7 @@ pub struct AvailSend {
     pub destination_timestamp: Option<NaiveDateTime>,
     pub depositor_address: String,
     pub receiver_address: String,
-    pub amount: String,
-    pub claim_type: ClaimTypeEnum,
+    pub amount: String
 }
 
 #[derive(Queryable, Selectable, Insertable, Identifiable, Serialize)]
@@ -127,6 +98,5 @@ pub struct EthereumSend {
     pub destination_timestamp: Option<NaiveDateTime>,
     pub depositor_address: String,
     pub receiver_address: String,
-    pub amount: String,
-    pub claim_type: ClaimTypeEnum,
+    pub amount: String
 }
