@@ -24,12 +24,15 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 sp-io = "34.0"
 sp-core = "34.0"
-chrono = "0.4"
 avail-core = { git = "https://github.com/availproject/avail-core", branch = "main"}
 http = "1.1"
 backon = { version = "0.5", features = ["tokio-sleep"] }
 anyhow = "1"
 lazy_static = "1.5"
+diesel = { version = "2.2.4", features = ["postgres", "chrono", "r2d2"] }
+diesel-enum = "0.2.1"
+serde_with = "3.11.0"
+chrono = { version = "0.4", features = ["serde"] }
 
 [target.'cfg(not(target_env = "msvc"))'.dependencies]
 tikv-jemallocator = "0.6"
