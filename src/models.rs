@@ -1,4 +1,4 @@
-use crate::schema::sql_types::{Status};
+use crate::schema::sql_types::Status;
 use chrono::NaiveDateTime;
 use diesel::pg::{Pg, PgValue};
 use diesel::serialize::{IsNull, Output};
@@ -72,7 +72,7 @@ pub struct AvailSend {
     pub destination_timestamp: Option<NaiveDateTime>,
     pub depositor_address: String,
     pub receiver_address: String,
-    pub amount: String
+    pub amount: String,
 }
 
 #[derive(Queryable, Selectable, Insertable, Identifiable, Serialize)]
@@ -98,5 +98,5 @@ pub struct EthereumSend {
     pub destination_timestamp: Option<NaiveDateTime>,
     pub depositor_address: String,
     pub receiver_address: String,
-    pub amount: String
+    pub amount: String,
 }
