@@ -830,7 +830,7 @@ async fn main() {
             .and_then(|transactions_mapping_response| {
                 transactions_mapping_response.parse::<u32>().ok()
             })
-            .unwrap_or(120),
+            .unwrap_or(60),
         beaconchain_api_key: env::var("BEACONCHAIN_API_KEY").unwrap_or("".to_owned()),
         connection_pool,
     });
