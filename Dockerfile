@@ -1,4 +1,4 @@
-FROM rust:1.79.0-slim AS builder
+FROM rust:1.84.0-slim AS builder
 WORKDIR /build
 COPY . .
 ARG BUILD_PROFILE=release
@@ -13,7 +13,7 @@ WORKDIR /app
 COPY --from=builder /build/bridge-api /usr/local/bin
 
 RUN adduser --disabled-password --gecos "" --no-create-home --uid 1000 bridge \
-    && apt-get update && apt-get install -y ca-certificates \
+    && apt-get update && apt-get install -y ca-certificates libpq-dev \
     && apt clean \
     && chown -R bridge:bridge /usr/local/bin/bridge-api
 
