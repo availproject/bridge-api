@@ -848,6 +848,7 @@ async fn main() {
         .route("/avl/head", get(get_avl_head))
         .route("/v1/avl/proof/:block_hash/:message_id", get(get_avl_proof))
         .route("/v1/transactions", get(transactions))
+        .route("/transactions", get(transactions))
         .route("/avl/proof/:block_hash/:message_id", get(get_avl_proof))
         .route("/beacon/slot/:slot_number", get(get_beacon_slot))
         .layer(TraceLayer::new_for_http())
