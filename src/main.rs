@@ -463,7 +463,7 @@ async fn get_eth_proof(
             }) => {
                 match data.to_string().contains("is not in the range of blocks") {
                     true => {
-                        tracing::warn!("Succinct VectorX contract not updated yet, try again in a few minutes");
+                        tracing::warn!("⏳ Succinct VectorX contract not updated yet, try again in a few minutes");
                         return (
                             StatusCode::TOO_EARLY,
                             [("Cache-Control", format!("max-age={}, must-revalidate", eth_proof_cache_maxage))],
