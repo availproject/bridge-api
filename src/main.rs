@@ -52,6 +52,7 @@ use tower_http::{
     cors::{Any, CorsLayer},
     trace::TraceLayer,
 };
+use tracing::warn;
 use tracing_subscriber::prelude::*;
 
 #[cfg(not(target_env = "msvc"))]
@@ -186,6 +187,7 @@ struct AppState {
     slot_mapping_cache_maxage: u32,
     transactions_cache_maxage: u32,
     connection_pool: r2d2::Pool<ConnectionManager<PgConnection>>,
+    transactions_result_max_size: u32,
     chains: HashMap<u64, Chain>,
 }
 
@@ -462,6 +464,8 @@ fn map_avail_send_to_transaction_result(send: AvailSend) -> TransactionData {
     }
 }
 
+/// transactions returns bridge transactions that are matched with a provided query params
+/// limits the output to the most recent (500 default) transaction.
 #[inline(always)]
 async fn transactions(
     Query(address_query): Query<TransactionQueryParams>,
@@ -500,7 +504,7 @@ async fn transactions(
     let ethereum_sends_results = eth_send_query
         .select(EthereumSend::as_select())
         .order_by(schema::ethereum_sends::source_timestamp.desc())
-        .limit(500)
+        .limit(state.transactions_result_max_size.into())
         .load::<EthereumSend>(&mut conn);
 
     match ethereum_sends_results {
@@ -534,7 +538,7 @@ async fn transactions(
     let avail_sends_results = avail_send_query
         .select(AvailSend::as_select())
         .order_by(schema::avail_sends::source_timestamp.desc())
-        .limit(500)
+        .limit(state.transactions_result_max_size.into())
         .load::<AvailSend>(&mut conn);
 
     match avail_sends_results {
@@ -552,6 +556,19 @@ async fn transactions(
                 Json(json!({ "error": e.to_string()})),
             );
         }
+    }
+
+    let avail_send_count = transaction_results.avail_send.len() as u32;
+    let eth_send_count = transaction_results.eth_send.len() as u32;
+
+    // if number of results is the same as the configure value
+    if avail_send_count >= state.transactions_result_max_size
+        || eth_send_count >= state.transactions_result_max_size
+    {
+        warn!(
+            "Transaction result has more items that the configured {}",
+            state.transactions_result_max_size
+        );
     }
 
     Ok((
@@ -1281,6 +1298,12 @@ async fn main() {
             })
             .unwrap_or(60),
         connection_pool,
+        transactions_result_max_size: env::var("TRANSACTIONS_RESULT_MAX_SIZE")
+            .ok()
+            .and_then(|transactions_mapping_response| {
+                transactions_mapping_response.parse::<u32>().ok()
+            })
+            .unwrap_or(500),
         chains,
     });
 
