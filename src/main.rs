@@ -461,21 +461,30 @@ async fn get_eth_proof(
                 error: Some(data),
                 ..
             }) => {
-                match data.to_string().contains("is not in the range of blocks") {
+                return match data.to_string().contains("is not in the range of blocks") {
                     true => {
-                        tracing::warn!("⏳ Succinct VectorX contract not updated yet, try again in a few minutes");
-                        return (
-                            StatusCode::TOO_EARLY,
-                            [("Cache-Control", format!("max-age={}, must-revalidate", eth_proof_cache_maxage))],
-                            Json(json!({ "error": data })),
+                        tracing::warn!(
+                            "⏳ Succinct VectorX contract not updated yet! Response: {}",
+                            data
                         );
+                        (
+                            StatusCode::TOO_EARLY,
+                            [(
+                                "Cache-Control",
+                                format!("max-age={}, must-revalidate", eth_proof_cache_maxage),
+                            )],
+                            Json(json!({ "error": data })),
+                        )
                     }
                     _ => {
-                        tracing::error!("❌ Succinct API returned unsuccessfully");
-                        return (
+                        tracing::error!(
+                            "❌ Succinct API returned unsuccessfully. Response: {}",
+                            data
+                        );
+                        (
                             StatusCode::NOT_FOUND,
                             [("Cache-Control", "max-age=60, must-revalidate".to_string())],
-                            Json(json!({ "error": data }))
+                            Json(json!({ "error": data })),
                         )
                     }
                 }
