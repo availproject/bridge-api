@@ -485,49 +485,73 @@ async fn transactions(
     // Initialize the result variables
     let mut transaction_results: TransactionResult = TransactionResult::default();
 
-    // Return the combined results
+    let mut eth_send_query = ethereum_sends.into_boxed();
     if let Some(eth_address) = address_query.eth_address {
-        let ethereum_sends_results = ethereum_sends
-            .select(EthereumSend::as_select())
-            .filter(schema::ethereum_sends::depositor_address.eq(format!("{:?}", eth_address)))
-            .order_by(schema::ethereum_sends::source_timestamp.desc())
-            .limit(500)
-            .load::<EthereumSend>(&mut conn);
-
-        transaction_results.eth_send = ethereum_sends_results
-            .map_err(|e| {
-                tracing::error!("Cannot get ethereum send transactions:: {e:#}");
-                ErrorResponse::with_status_and_headers(
-                    e.into(),
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    &[("Cache-Control", "public, max-age=60, must-revalidate")],
-                )
-            })?
-            .into_iter()
-            .map(map_ethereum_send_to_transaction_result)
-            .collect();
+        eth_send_query = eth_send_query
+            .filter(schema::ethereum_sends::depositor_address.eq(format!("{:?}", eth_address)));
     }
 
     if let Some(avail_address) = address_query.avail_address {
-        let avail_sends_results = avail_sends
-            .select(AvailSend::as_select())
-            .filter(schema::avail_sends::depositor_address.eq(format!("{:?}", avail_address)))
-            .order_by(schema::avail_sends::source_timestamp.desc())
-            .limit(500)
-            .load::<AvailSend>(&mut conn);
+        eth_send_query = eth_send_query
+            .or_filter(schema::ethereum_sends::receiver_address.eq(format!("{:?}", avail_address)));
+    }
 
-        transaction_results.avail_send = avail_sends_results
-            .map_err(|e| {
-                tracing::error!("Cannot get avail send transactions: {e:#}");
-                ErrorResponse::with_status_and_headers(
-                    e.into(),
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    &[("Cache-Control", "public, max-age=60, must-revalidate")],
-                )
-            })?
-            .into_iter()
-            .map(map_avail_send_to_transaction_result)
-            .collect();
+    // Return the combined results
+    let ethereum_sends_results = eth_send_query
+        .select(EthereumSend::as_select())
+        .order_by(schema::ethereum_sends::source_timestamp.desc())
+        .limit(500)
+        .load::<EthereumSend>(&mut conn);
+
+    match ethereum_sends_results {
+        Ok(transaction) => {
+            transaction_results.eth_send = transaction
+                .into_iter()
+                .map(map_ethereum_send_to_transaction_result)
+                .collect()
+        }
+        Err(e) => {
+            tracing::error!("Cannot get ethereum send transactions: {:?}", e);
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                [("Cache-Control", "max-age=60, must-revalidate".to_string())],
+                Json(json!({ "error": e.to_string()})),
+            );
+        }
+    }
+
+    let mut avail_send_query = avail_sends.into_boxed();
+    if let Some(avail_address) = address_query.avail_address {
+        avail_send_query = avail_send_query
+            .filter(schema::avail_sends::depositor_address.eq(format!("{:?}", avail_address)));
+    }
+
+    if let Some(eth_address) = address_query.eth_address {
+        avail_send_query = avail_send_query
+            .or_filter(schema::avail_sends::receiver_address.eq(format!("{:?}", eth_address)));
+    }
+
+    let avail_sends_results = avail_send_query
+        .select(AvailSend::as_select())
+        .order_by(schema::avail_sends::source_timestamp.desc())
+        .limit(500)
+        .load::<AvailSend>(&mut conn);
+
+    match avail_sends_results {
+        Ok(transaction) => {
+            transaction_results.avail_send = transaction
+                .into_iter()
+                .map(map_avail_send_to_transaction_result)
+                .collect()
+        }
+        Err(e) => {
+            tracing::error!("Cannot get avail send transactions: {:?}", e);
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                [("Cache-Control", "max-age=60, must-revalidate".to_string())],
+                Json(json!({ "error": e.to_string()})),
+            );
+        }
     }
 
     Ok((
