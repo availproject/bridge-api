@@ -66,6 +66,7 @@ struct AppState {
     avl_head_cache_maxage: u16,
     avl_proof_cache_maxage: u32,
     eth_proof_cache_maxage: u32,
+    eth_proof_failure_cache_maxage: u32,
     slot_mapping_cache_maxage: u32,
     transactions_cache_maxage: u32,
     beaconchain_api_key: String,
@@ -413,6 +414,7 @@ async fn get_eth_proof(
     });
 
     let eth_proof_cache_maxage = state.eth_proof_cache_maxage;
+    let eth_proof_failure_cache_maxage = state.eth_proof_failure_cache_maxage;
     let url = format!(
         "{}?chainName={}&contractChainId={}&contractAddress={}&blockHash={}",
         state.succinct_base_url,
@@ -464,7 +466,13 @@ async fn get_eth_proof(
                 tracing::error!("❌ Succinct API returned unsuccessfully");
                 return (
                     StatusCode::NOT_FOUND,
-                    [("Cache-Control", "max-age=60, must-revalidate".to_string())],
+                    [(
+                        "Cache-Control",
+                        format!(
+                            "public, max-age={}, immutable",
+                            eth_proof_failure_cache_maxage
+                        ),
+                    )],
                     Json(json!({ "error": data })),
                 );
             }
@@ -817,6 +825,10 @@ async fn main() {
             .ok()
             .and_then(|proof_response| proof_response.parse::<u32>().ok())
             .unwrap_or(172800),
+        eth_proof_failure_cache_maxage: env::var("ETH_PROOF_FAILURE_CACHE_MAXAGE")
+            .ok()
+            .and_then(|proof_response| proof_response.parse::<u32>().ok())
+            .unwrap_or(5400),
         avl_proof_cache_maxage: env::var("AVL_PROOF_CACHE_MAXAGE")
             .ok()
             .and_then(|proof_response| proof_response.parse::<u32>().ok())
