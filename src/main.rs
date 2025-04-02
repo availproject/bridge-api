@@ -55,6 +55,7 @@ struct AppState {
     avl_head_cache_maxage: u16,
     avl_proof_cache_maxage: u32,
     eth_proof_cache_maxage: u32,
+    eth_proof_failure_cache_maxage: u32,
     slot_mapping_cache_maxage: u32,
     beaconchain_api_key: String,
 }
@@ -240,6 +241,7 @@ async fn get_eth_proof(
     });
 
     let eth_proof_cache_maxage = state.eth_proof_cache_maxage;
+    let eth_proof_failure_cache_maxage = state.eth_proof_failure_cache_maxage;
     let url = format!(
         "{}?chainName={}&contractChainId={}&contractAddress={}&blockHash={}",
         state.succinct_base_url,
