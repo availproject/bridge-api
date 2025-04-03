@@ -2,6 +2,7 @@ mod models;
 mod schema;
 use diesel::{r2d2, QueryDsl, SelectableHelper};
 
+use crate::models::StatusEnum::ClaimPending;
 use crate::models::{AvailSend, EthereumSend, StatusEnum};
 use crate::schema::avail_sends::dsl::avail_sends;
 use crate::schema::ethereum_sends::dsl::ethereum_sends;
@@ -35,6 +36,7 @@ use serde_with::serde_as;
 use sha3::{Digest, Keccak256};
 use sp_core::{Decode, H160, H256};
 use sp_io::hashing::twox_128;
+use sp_io::offchain::timestamp;
 use std::sync::Arc;
 use std::{env, process, time::Duration};
 #[cfg(not(target_env = "msvc"))]
@@ -45,6 +47,7 @@ use tower_http::{
     cors::{Any, CorsLayer},
     trace::TraceLayer,
 };
+use tracing::{error, info};
 use tracing_subscriber::prelude::*;
 
 #[cfg(not(target_env = "msvc"))]
@@ -70,6 +73,8 @@ struct AppState {
     transactions_cache_maxage: u32,
     beaconchain_api_key: String,
     connection_pool: r2d2::Pool<ConnectionManager<PgConnection>>,
+    expected_eth_head_update: u32,
+    expected_avail_head_update: u32,
 }
 
 #[derive(Deserialize)]
@@ -257,6 +262,7 @@ pub struct TransactionData {
     pub depositor_address: String,
     pub receiver_address: String,
     pub amount: String,
+    pub estimated_time_to_claim: Option<u32>,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -266,7 +272,31 @@ pub struct TransactionResult {
     pub eth_send: Vec<TransactionData>,
 }
 
-fn map_ethereum_send_to_transaction_result(send: EthereumSend) -> TransactionData {
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SuccinctHealthResponse {
+    data: SuccinctHealthResponseData,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SuccinctHealthResponseData {
+    blocks_behind_head: u64,
+    eth_blocks_since_last_log: u64,
+    last_log_timestamp: u64,
+    log_emitted: bool,
+}
+
+fn map_ethereum_send_to_transaction_result(
+    send: EthereumSend,
+    last_block: u32,
+    duration: u32,
+) -> TransactionData {
+    let mut estimated_time_to_claim = None;
+    if last_block < send.source_block_number as u32{
+        estimated_time_to_claim = Some(duration);
+    }
+
     TransactionData {
         message_id: send.message_id,
         status: send.status,
@@ -283,11 +313,21 @@ fn map_ethereum_send_to_transaction_result(send: EthereumSend) -> TransactionDat
         depositor_address: send.depositor_address,
         receiver_address: send.receiver_address,
         amount: send.amount,
+        estimated_time_to_claim,
     }
 }
 
 // Function to map AvailSend to TransactionResult
-fn map_avail_send_to_transaction_result(send: AvailSend) -> TransactionData {
+fn map_avail_send_to_transaction_result(
+    send: AvailSend,
+    last_block: u64,
+    duration: u32,
+) -> TransactionData {
+    let mut estimated_time_to_claim = None;
+    if last_block < send.source_block_number as u64 {
+        estimated_time_to_claim = Some(duration);
+    }
+
     TransactionData {
         message_id: send.message_id,
         status: send.status,
@@ -304,6 +344,7 @@ fn map_avail_send_to_transaction_result(send: AvailSend) -> TransactionData {
         depositor_address: send.depositor_address,
         receiver_address: send.receiver_address,
         amount: send.amount,
+        estimated_time_to_claim,
     }
 }
 
@@ -313,12 +354,51 @@ async fn transactions(
     State(state): State<Arc<AppState>>,
 ) -> impl IntoResponse {
     if address_query.eth_address.is_none() && address_query.avail_address.is_none() {
-        tracing::error!("Query params not provided.");
         return (
             StatusCode::BAD_REQUEST,
             [("Cache-Control", "max-age=60, must-revalidate".to_string())],
             Json(json!({ "error": "Invalid request: Query params not provided"})),
         );
+    }
+    let slot_block_head = SLOT_BLOCK_HEAD.read().await;
+
+    let mut expected_eth_update: u32 = 0;
+    let mut last_eth_block: u64 = 0;
+
+    if let Some((_slot, block, _hash, timestamp)) = slot_block_head.as_ref() {
+        let now = Utc::now().timestamp() as u64;
+        let time_since_update = now.saturating_sub(*timestamp) as u32;
+
+        info!(
+            "TIME SINCE UPDATE {}, latest block {}",
+            time_since_update, block
+        );
+
+        expected_eth_update = state
+            .expected_eth_head_update
+            .saturating_sub(time_since_update);
+        last_eth_block = *block;
+    }
+
+    let vectorx_block_head = VECTORX_BLOCK_HEAD_LAST_UPDATE.read().await;
+
+    let mut expected_avail_update: u32 = 0;
+    let mut last_avail_block: u32 = 0;
+
+    if let Some((slot, block, timestamp, end_block)) = vectorx_block_head.as_ref() {
+        let now = Utc::now().timestamp() as u64;
+        let time_since_update = now.saturating_sub(*timestamp) as u32;
+
+        info!(
+            "TIME SINCE UPDATE VectorX {}, latest block {}",
+            time_since_update, end_block
+        );
+
+        // if zero
+        expected_avail_update = state
+            .expected_avail_head_update
+            .saturating_sub(time_since_update);
+        last_avail_block = *end_block;
     }
 
     let cloned_state = state.clone();
@@ -343,7 +423,13 @@ async fn transactions(
             Ok(transaction) => {
                 transaction_results.eth_send = transaction
                     .into_iter()
-                    .map(map_ethereum_send_to_transaction_result)
+                    .map(|send| {
+                        map_ethereum_send_to_transaction_result(
+                            send,
+                            last_avail_block,
+                            expected_avail_update,
+                        )
+                    })
                     .collect()
             }
             Err(e) => {
@@ -368,7 +454,9 @@ async fn transactions(
             Ok(transaction) => {
                 transaction_results.avail_send = transaction
                     .into_iter()
-                    .map(map_avail_send_to_transaction_result)
+                    .map(|e| {
+                        map_avail_send_to_transaction_result(e, last_eth_block, expected_eth_update)
+                    })
                     .collect()
             }
             Err(e) => {
@@ -833,6 +921,18 @@ async fn main() {
             .unwrap_or(60),
         beaconchain_api_key: env::var("BEACONCHAIN_API_KEY").unwrap_or("".to_owned()),
         connection_pool,
+        expected_eth_head_update: env::var("EXPECTED_ETH_HEAD_UPDATE")
+            .ok()
+            .and_then(|transactions_mapping_response| {
+                transactions_mapping_response.parse::<u32>().ok()
+            })
+            .unwrap_or(900),
+        expected_avail_head_update: env::var("EXPECTED_AVAIL_HEAD_UPDATE")
+            .ok()
+            .and_then(|transactions_mapping_response| {
+                transactions_mapping_response.parse::<u32>().ok()
+            })
+            .unwrap_or(900),
     });
 
     let app = Router::new()
@@ -865,20 +965,90 @@ async fn main() {
     let listener = tokio::net::TcpListener::bind(format!("{}:{}", host, port))
         .await
         .unwrap();
-
+    let state = shared_state.clone();
     tokio::spawn(async move {
         tracing::info!("Starting head tracking task");
-        if let Err(e) = track_slot_avail_task(shared_state.clone()).await {
-            tracing::error!("Error occurred, cannot continue: {e:#}");
+        if let Err(e) = track_slot_avail_task(state.clone()).await {
+            error!("Error occurred, cannot continue: {e:#}");
             process::exit(-1);
         }
     });
+
+    tokio::spawn(async move {
+        tracing::info!("Starting head tracking task for eth");
+        if let Err(e) = track_slot_eth_task(shared_state.clone()).await {
+            error!("Error occurred, cannot continue: {e:#}");
+            process::exit(-1);
+        }
+    });
+
     tracing::info!("🚀 Listening on {} port {}", host, port);
     axum::serve(listener, app).await.unwrap();
 }
 
 lazy_static! {
     static ref SLOT_BLOCK_HEAD: RwLock<Option<(u64, u64, B256, u64)>> = RwLock::new(None);
+    static ref VECTORX_BLOCK_HEAD_LAST_UPDATE: RwLock<Option<(u64, u64, u64, u32)>> =
+        RwLock::new(None);
+}
+
+async fn track_slot_eth_task(state: Arc<AppState>) -> Result<()> {
+    let do_work = || {
+        let state = state.clone();
+        async move {
+            let url = format!(
+                "{}/{}/?contractChainId={}&contractAddress={}",
+                state.succinct_base_url, "range", state.contract_chain_id, state.contract_address
+            );
+            let response = state.request_client.get(url).send().await.expect("");
+            let range_response = response.json::<RangeBlocksAPIResponse>().await.expect("");
+
+            let end_block = range_response.data.end;
+
+            let url = format!(
+                "{}/health?chainName={}&contractChainId={}&contractAddress={}",
+                state.succinct_base_url,
+                state.avail_chain_name,
+                state.contract_chain_id,
+                state.contract_address,
+            );
+
+            let succinct_response = state.request_client.get(url.clone()).send().await;
+            match succinct_response {
+                Ok(response) => {
+                    let health_response = response
+                        .json::<SuccinctHealthResponse>()
+                        .await
+                        .expect("Cannot decode health api response");
+                    info!("Health endpoint response {:?}", health_response);
+
+                    let mut vectorx_block_head_last_update =
+                        VECTORX_BLOCK_HEAD_LAST_UPDATE.write().await;
+                    *vectorx_block_head_last_update = Some((
+                        health_response.data.blocks_behind_head,
+                        health_response.data.eth_blocks_since_last_log,
+                        health_response.data.blocks_behind_head,
+                        end_block,
+                    ));
+                    drop(vectorx_block_head_last_update);
+                }
+                Err(err) => {
+                    error!("Cannot fetch data from VectorX helth endpoint: {err}");
+                }
+            }
+            tokio::time::sleep(Duration::from_secs(60 * 5)).await;
+            Ok::<(), anyhow::Error>(())
+        }
+    };
+
+    let retry_settings = ExponentialBuilder::default()
+        .with_min_delay(Duration::from_secs(5))
+        .with_max_delay(Duration::from_secs(60))
+        .with_max_times(10)
+        .with_factor(2.0);
+    do_work.retry(&retry_settings).await?;
+
+    Ok(())
 }
 
 async fn track_slot_avail_task(state: Arc<AppState>) -> Result<()> {
