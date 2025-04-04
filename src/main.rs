@@ -290,7 +290,17 @@ async fn get_eth_proof(
                 error: Some(data),
                 ..
             }) => {
-                tracing::error!("❌ Succinct API returned unsuccessfully");
+                if data.contains("not in the range of blocks") {
+                    tracing::warn!(
+                        "⏳ Succinct VectorX contract not updated yet! Response: {}",
+                        data
+                    );
+                } else {
+                    tracing::error!(
+                        "❌ Succinct API returned unsuccessfully. Response: {}",
+                        data
+                    );
+                }
                 return (
                     StatusCode::NOT_FOUND,
                     [(
