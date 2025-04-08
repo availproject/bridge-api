@@ -385,7 +385,7 @@ async fn transactions(
     let mut expected_avail_update: u32 = 0;
     let mut last_avail_block: u32 = 0;
 
-    if let Some((slot, block, timestamp, end_block)) = vectorx_block_head.as_ref() {
+    if let Some((_slot, _block, timestamp, end_block)) = vectorx_block_head.as_ref() {
         let now = Utc::now().timestamp() as u64;
         let time_since_update = now.saturating_sub(*timestamp) as u32;
 
@@ -1033,7 +1033,7 @@ async fn track_slot_eth_task(state: Arc<AppState>) -> Result<()> {
                     drop(vectorx_block_head_last_update);
                 }
                 Err(err) => {
-                    error!("Cannot fetch data from VectorX helth endpoint: {err}");
+                    error!("Cannot fetch data from VectorX health endpoint: {err}");
                 }
             }
             tokio::time::sleep(Duration::from_secs(60 * 5)).await;
