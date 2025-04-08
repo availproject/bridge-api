@@ -2,7 +2,6 @@ mod models;
 mod schema;
 use diesel::{r2d2, QueryDsl, SelectableHelper};
 
-use crate::models::StatusEnum::ClaimPending;
 use crate::models::{AvailSend, EthereumSend, StatusEnum};
 use crate::schema::avail_sends::dsl::avail_sends;
 use crate::schema::ethereum_sends::dsl::ethereum_sends;
@@ -36,7 +35,6 @@ use serde_with::serde_as;
 use sha3::{Digest, Keccak256};
 use sp_core::{Decode, H160, H256};
 use sp_io::hashing::twox_128;
-use sp_io::offchain::timestamp;
 use std::sync::Arc;
 use std::{env, process, time::Duration};
 #[cfg(not(target_env = "msvc"))]
@@ -293,7 +291,7 @@ fn map_ethereum_send_to_transaction_result(
     duration: u32,
 ) -> TransactionData {
     let mut estimated_time_to_claim = None;
-    if last_block < send.source_block_number as u32{
+    if last_block < send.source_block_number as u32 {
         estimated_time_to_claim = Some(duration);
     }
 
