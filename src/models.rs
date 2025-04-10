@@ -1,4 +1,6 @@
 use crate::schema::sql_types::Status;
+use alloy_primitives::B256;
+use avail_core::data_proof::AddressedMessage;
 use chrono::NaiveDateTime;
 use diesel::pg::{Pg, PgValue};
 use diesel::serialize::{IsNull, Output};
@@ -12,6 +14,142 @@ use jsonrpsee::core::Serialize;
 use serde::Deserialize;
 use serde_with::serde_as;
 use std::io::Write;
+
+#[derive(Deserialize)]
+pub struct IndexStruct {
+    pub index: u32,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KateQueryDataProofResponse {
+    pub data_proof: DataProof,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message: Option<AddressedMessage>,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DataProof {
+    pub roots: Roots,
+    pub proof: Vec<B256>,
+    pub leaf_index: u32,
+    pub leaf: B256,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Roots {
+    pub data_root: B256,
+    pub blob_root: B256,
+    pub bridge_root: B256,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountStorageProofResponse {
+    pub account_proof: Vec<String>,
+    pub storage_proof: Vec<StorageProof>,
+}
+
+#[derive(Deserialize)]
+pub struct StorageProof {
+    pub proof: Vec<String>,
+}
+
+#[derive(Deserialize)]
+pub struct SuccinctAPIResponse {
+    pub data: Option<SuccinctAPIData>,
+    pub error: Option<String>,
+    pub success: Option<bool>,
+}
+
+#[derive(Deserialize)]
+pub struct BeaconAPIResponse {
+    pub status: String,
+    pub data: BeaconAPIResponseData,
+}
+
+#[derive(Deserialize, Serialize)]
+pub struct BeaconAPIResponseData {
+    pub blockroot: B256,
+    pub exec_block_number: u32,
+    pub epoch: u32,
+    pub slot: u32,
+    pub exec_state_root: B256,
+    pub exec_block_hash: B256,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SlotMappingResponse {
+    pub block_hash: B256,
+    pub block_number: u32,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SuccinctAPIData {
+    pub range_hash: B256,
+    pub data_commitment: B256,
+    pub merkle_branch: Vec<B256>,
+    pub index: u16,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AggregatedResponse {
+    pub data_root_proof: Vec<B256>,
+    pub leaf_proof: Vec<B256>,
+    pub range_hash: B256,
+    pub data_root_index: u16,
+    pub leaf: B256,
+    pub leaf_index: u32,
+    pub data_root: B256,
+    pub blob_root: B256,
+    pub bridge_root: B256,
+    pub data_root_commitment: B256,
+    pub block_hash: B256,
+    pub message: Option<AddressedMessage>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EthProofResponse {
+    pub account_proof: Vec<String>,
+    pub storage_proof: Vec<String>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HeadResponseV2 {
+    pub slot: u64,
+    pub block_number: u64,
+    pub block_hash: B256,
+    pub timestamp: u64,
+    pub timestamp_diff: u64,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HeadResponseLegacy {
+    pub slot: u64,
+    pub timestamp: u64,
+    pub timestamp_diff: u64,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RangeBlocks {
+    pub start: u32,
+    pub end: u32,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RangeBlocksAPIResponse {
+    pub data: RangeBlocks,
+}
 
 #[derive(Debug, Clone, PartialEq, FromSqlRow, AsExpression, Eq)]
 #[diesel(sql_type = Status)]

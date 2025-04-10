@@ -2,12 +2,16 @@ mod models;
 mod schema;
 use diesel::{r2d2, QueryDsl, SelectableHelper};
 
-use crate::models::{AvailSend, EthereumSend, StatusEnum};
+use crate::models::{
+    AccountStorageProofResponse, AggregatedResponse, AvailSend, BeaconAPIResponse,
+    EthProofResponse, EthereumSend, HeadResponseLegacy, HeadResponseV2, IndexStruct,
+    KateQueryDataProofResponse, RangeBlocksAPIResponse, SlotMappingResponse, StatusEnum,
+    SuccinctAPIResponse,
+};
 use crate::schema::avail_sends::dsl::avail_sends;
 use crate::schema::ethereum_sends::dsl::ethereum_sends;
 use alloy_primitives::{hex, B256, U256};
 use anyhow::{Context, Result};
-use avail_core::data_proof::AddressedMessage;
 use axum::{
     extract::{Json, Path, Query, State},
     http::StatusCode,
@@ -73,142 +77,6 @@ struct AppState {
     connection_pool: r2d2::Pool<ConnectionManager<PgConnection>>,
     expected_eth_head_update: u32,
     expected_avail_head_update: u32,
-}
-
-#[derive(Deserialize)]
-struct IndexStruct {
-    index: u32,
-}
-
-#[derive(Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct KateQueryDataProofResponse {
-    data_proof: DataProof,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    message: Option<AddressedMessage>,
-}
-
-#[derive(Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct DataProof {
-    roots: Roots,
-    proof: Vec<B256>,
-    leaf_index: u32,
-    leaf: B256,
-}
-
-#[derive(Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct Roots {
-    data_root: B256,
-    blob_root: B256,
-    bridge_root: B256,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct AccountStorageProofResponse {
-    account_proof: Vec<String>,
-    storage_proof: Vec<StorageProof>,
-}
-
-#[derive(Deserialize)]
-struct StorageProof {
-    proof: Vec<String>,
-}
-
-#[derive(Deserialize)]
-struct SuccinctAPIResponse {
-    data: Option<SuccinctAPIData>,
-    error: Option<String>,
-    success: Option<bool>,
-}
-
-#[derive(Deserialize)]
-struct BeaconAPIResponse {
-    status: String,
-    data: BeaconAPIResponseData,
-}
-
-#[derive(Deserialize, Serialize)]
-struct BeaconAPIResponseData {
-    blockroot: B256,
-    exec_block_number: u32,
-    epoch: u32,
-    slot: u32,
-    exec_state_root: B256,
-    exec_block_hash: B256,
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct SlotMappingResponse {
-    block_hash: B256,
-    block_number: u32,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct SuccinctAPIData {
-    range_hash: B256,
-    data_commitment: B256,
-    merkle_branch: Vec<B256>,
-    index: u16,
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct AggregatedResponse {
-    data_root_proof: Vec<B256>,
-    leaf_proof: Vec<B256>,
-    range_hash: B256,
-    data_root_index: u16,
-    leaf: B256,
-    leaf_index: u32,
-    data_root: B256,
-    blob_root: B256,
-    bridge_root: B256,
-    data_root_commitment: B256,
-    block_hash: B256,
-    message: Option<AddressedMessage>,
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct EthProofResponse {
-    account_proof: Vec<String>,
-    storage_proof: Vec<String>,
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct HeadResponseV2 {
-    pub slot: u64,
-    pub block_number: u64,
-    pub block_hash: B256,
-    pub timestamp: u64,
-    pub timestamp_diff: u64,
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct HeadResponseLegacy {
-    pub slot: u64,
-    pub timestamp: u64,
-    pub timestamp_diff: u64,
-}
-
-#[derive(Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct RangeBlocks {
-    start: u32,
-    end: u32,
-}
-
-#[derive(Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct RangeBlocksAPIResponse {
-    data: RangeBlocks,
 }
 
 async fn alive() -> Result<Json<Value>, StatusCode> {
