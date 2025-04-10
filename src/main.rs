@@ -436,7 +436,17 @@ async fn get_eth_proof(
         Ok(resp) => match resp {
             Ok(data) => data,
             Err(err) => {
-                tracing::error!("❌ Cannot get kate data proof response: {:?}", err);
+                let err_str = err.to_string();
+                let is_warn = err_str.contains("Missing block")
+                    || err_str.contains("Cannot fetch tx data")
+                    || err_str.contains("is not finalized");
+
+                if is_warn {
+                    tracing::warn!("❌ Cannot get kate data proof response: {:?}", err);
+                } else {
+                    tracing::error!("❌ Cannot get kate data proof response: {:?}", err);
+                }
+
                 return (
                     StatusCode::BAD_REQUEST,
                     [("Cache-Control", "max-age=60, must-revalidate".to_string())],
