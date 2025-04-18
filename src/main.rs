@@ -40,6 +40,40 @@ use tracing_subscriber::prelude::*;
 #[global_allocator]
 static GLOBAL: Jemalloc = Jemalloc;
 
+#[derive(Debug, Deserialize)]
+struct Root {
+    data: Data,
+}
+
+#[derive(Debug, Deserialize)]
+struct Data {
+    message: Message,
+}
+
+#[derive(Debug, Deserialize)]
+struct Message {
+    slot: String,
+    body: Body,
+}
+
+#[derive(Debug, Deserialize)]
+struct Body {
+    execution_payload: ExecutionPayload,
+}
+
+#[derive(Debug, Deserialize)]
+struct ExecutionPayload {
+    block_number: String,
+    block_hash: String,
+}
+
+#[derive(Debug, serde::Serialize)]
+struct BlockSummary {
+    slot: String,
+    block_number: String,
+    block_hash: String,
+}
+
 #[derive(Debug)]
 struct AppState {
     avail_client: HttpClient,
@@ -109,27 +143,11 @@ struct SuccinctAPIResponse {
     success: Option<bool>,
 }
 
-#[derive(Deserialize)]
-struct BeaconAPIResponse {
-    status: String,
-    data: BeaconAPIResponseData,
-}
-
-#[derive(Deserialize, Serialize)]
-struct BeaconAPIResponseData {
-    blockroot: B256,
-    exec_block_number: u32,
-    epoch: u32,
-    slot: u32,
-    exec_state_root: B256,
-    exec_block_hash: B256,
-}
-
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct SlotMappingResponse {
-    block_hash: B256,
-    block_number: u32,
+    block_hash: String,
+    block_number: String,
 }
 
 #[derive(Deserialize)]
@@ -441,43 +459,32 @@ async fn get_beacon_slot(
 ) -> impl IntoResponse {
     let resp = state
         .request_client
-        .get(format!("{}/{}", state.beaconchain_base_url, slot))
-        .header("apikey", state.beaconchain_api_key.clone())
+        .get(format!(
+            "{}/eth/v2/beacon/blocks/{}",
+            state.beaconchain_base_url, slot
+        ))
+        // .header("apikey", state.beaconchain_api_key.clone())
         .send()
         .await;
 
     match resp {
         Ok(ok) => {
-            let response_data = ok.json::<BeaconAPIResponse>().await;
+            let response_data = ok.json::<Root>().await;
             match response_data {
-                Ok(rsp_data) => {
-                    if rsp_data.status == "OK" {
-                        (
-                            StatusCode::OK,
-                            [(
-                                "Cache-Control",
-                                format!(
-                                    "public, max-age={}, immutable",
-                                    state.slot_mapping_cache_maxage
-                                ),
-                            )],
-                            Json(json!(SlotMappingResponse {
-                                block_number: rsp_data.data.exec_block_number,
-                                block_hash: rsp_data.data.exec_block_hash
-                            })),
-                        )
-                    } else {
-                        tracing::error!(
-                            "❌ Beacon API returned unsuccessfully: {:?}",
-                            rsp_data.status
-                        );
-                        (
-                            StatusCode::INTERNAL_SERVER_ERROR,
-                            [("Cache-Control", "max-age=60, must-revalidate".to_string())],
-                            Json(json!({ "error": "Cannot fetch slot data"})),
-                        )
-                    }
-                }
+                Ok(rsp_data) => (
+                    StatusCode::OK,
+                    [(
+                        "Cache-Control",
+                        format!(
+                            "public, max-age={}, immutable",
+                            state.slot_mapping_cache_maxage
+                        ),
+                    )],
+                    Json(json!(SlotMappingResponse {
+                        block_number: rsp_data.data.message.body.execution_payload.block_number,
+                        block_hash: rsp_data.data.message.body.execution_payload.block_hash
+                    })),
+                ),
                 Err(err) => {
                     tracing::error!("❌ Cannot get beacon API response data: {:?}", err);
                     (
@@ -787,18 +794,24 @@ async fn track_slot_avail_task(state: Arc<AppState>) -> Result<()> {
 
                 drop(slot_block_head);
 
-                let resp = reqwest::get(format!("{}/{}", state.beaconchain_base_url, slot))
-                    .await
-                    .context("beacon get")?;
-                let res = resp
-                    .json::<BeaconAPIResponse>()
-                    .await
-                    .context("beacon decode")?;
-                let bl = res.data.exec_block_number;
-                let h = res.data.exec_block_hash;
+                let resp = reqwest::get(format!(
+                    "{}/eth/v2/beacon/blocks/{}",
+                    state.beaconchain_base_url, slot
+                ))
+                .await
+                .context("beacon get")?;
+                let res = resp.json::<Root>().await.context("beacon decode")?;
+                let bl = res
+                    .data
+                    .message
+                    .body
+                    .execution_payload
+                    .block_number
+                    .parse()?;
+                let h = res.data.message.body.execution_payload.block_hash.parse()?;
                 let mut slot_block_head = SLOT_BLOCK_HEAD.write().await;
                 tracing::info!("Beacon mapping: {slot}:{bl}");
-                *slot_block_head = Some((slot, bl as u64, h, timestamp));
+                *slot_block_head = Some((slot, bl, h, timestamp));
                 drop(slot_block_head);
 
                 tokio::time::sleep(Duration::from_secs(60 * 5)).await;
