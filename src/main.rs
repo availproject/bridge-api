@@ -3,7 +3,7 @@ mod schema;
 use crate::models::{AvailSend, EthereumSend, StatusEnum};
 use crate::schema::avail_sends::dsl::avail_sends;
 use crate::schema::ethereum_sends::dsl::ethereum_sends;
-use alloy::primitives::{Address, B256, U256, hex};
+use alloy::primitives::{Address, B256, ChainId, U256, hex};
 use alloy::providers::ProviderBuilder;
 use alloy::sol;
 use anyhow::{Context, Result};
@@ -31,7 +31,7 @@ use jsonrpsee::{
 };
 use lazy_static::lazy_static;
 use reqwest::Client;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::{Value, json};
 use serde_with::serde_as;
 use sha3::{Digest, Keccak256};
@@ -48,6 +48,7 @@ use tower_http::{
     cors::{Any, CorsLayer},
     trace::TraceLayer,
 };
+use tracing::info;
 use tracing_subscriber::prelude::*;
 
 #[cfg(not(target_env = "msvc"))]
@@ -80,7 +81,7 @@ struct AppState {
     slot_mapping_cache_maxage: u32,
     transactions_cache_maxage: u32,
     beaconchain_api_key: String,
-    connection_pool: r2d2::Pool<ConnectionManager<PgConnection>>,
+    // connection_pool: r2d2::Pool<ConnectionManager<PgConnection>>,
     chains: HashMap<u64, Chain>,
 }
 
@@ -93,6 +94,12 @@ struct Chain {
 #[derive(Deserialize)]
 struct IndexStruct {
     index: u32,
+}
+
+#[derive(Deserialize)]
+struct ProofQueryStruct {
+    index: u32,
+    chain_id: u64,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -231,6 +238,20 @@ struct RangeBlocksAPIResponse {
     data: RangeBlocks,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct HeaderBlockNumber {
+    #[serde(deserialize_with = "hex_to_u64")]
+    pub number: u64,
+}
+
+fn hex_to_u64<'de, D>(deserializer: D) -> Result<u64, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let s: &str = Deserialize::deserialize(deserializer)?;
+    u64::from_str_radix(s.trim_start_matches("0x"), 16).map_err(serde::de::Error::custom)
+}
+
 async fn alive() -> Result<Json<Value>, StatusCode> {
     Ok(Json(json!({ "name": "Avail Bridge API" })))
 }
@@ -330,6 +351,7 @@ fn map_avail_send_to_transaction_result(send: AvailSend) -> TransactionData {
     }
 }
 
+/*
 #[inline(always)]
 async fn transactions(
     Query(address_query): Query<TransactionQueryParams>,
@@ -417,7 +439,8 @@ async fn transactions(
         Json(json!(transaction_results)),
     )
 }
-
+*/
+#[deprecated(note="please use `get_proof` instead")]
 #[inline(always)]
 async fn get_eth_proof(
     Path(block_hash): Path<B256>,
@@ -832,6 +855,215 @@ async fn get_head(
     }
 }
 
+/// get_proof returns a proof from Avail for the provided chain id
+#[inline(always)]
+async fn get_proof(
+    Path(block_hash): Path<B256>,
+    Query(query_proof): Query<ProofQueryStruct>,
+    State(state): State<Arc<AppState>>,
+) -> impl IntoResponse {
+    let header_response: Result<HeaderBlockNumber, ClientError> = state
+        .avail_client
+        .request("chain_getHeader", rpc_params![block_hash])
+        .await;
+    if let Err(err) = header_response {
+        tracing::error!("Error fetching Avail block. {:?}", err);
+        return (
+            StatusCode::NOT_FOUND,
+            [("Cache-Control", "public, max-age=60, immutable".to_string())],
+            Json(
+                json!({ "error": format!("Cannot fetch {:?} provided Avail block.", block_hash) }),
+            ),
+        );
+    } else if let Ok(requested_block) = header_response {
+        if let Ok(head) = get_chain_head(State(state.clone()), query_proof.chain_id).await {
+            if requested_block.number > head {
+                tracing::warn!(
+                    "Contract not yet synced for the provided block hash {}, synced block number {}",
+                    block_hash,
+                    head
+                );
+                return (
+                    StatusCode::NOT_FOUND,
+                    [("Cache-Control", "public, max-age=60, immutable".to_string())],
+                    Json(
+                        json!({ "error": format!("Provided block hash {:?} is not yet in the range.", block_hash) }),
+                    ),
+                );
+            }
+        }
+    }
+
+    let cloned_state = state.clone();
+    let data_proof_response_fut = tokio::spawn(async move {
+        cloned_state
+            .avail_client
+            .request(
+                "kate_queryDataProof",
+                rpc_params![query_proof.index, &block_hash],
+            )
+            .await
+    });
+
+    let eth_proof_cache_maxage = state.eth_proof_cache_maxage;
+    let url = format!(
+        "{}?chainName={}&contractChainId={}&contractAddress={}&blockHash={}",
+        state.succinct_base_url,
+        state.avail_chain_name,
+        state.contract_chain_id,
+        state.contract_address,
+        block_hash
+    );
+
+    let succinct_response_fut = tokio::spawn(async move {
+        let succinct_response = state.request_client.get(url).send().await;
+        match succinct_response {
+            Ok(resp) => resp.json::<SuccinctAPIResponse>().await,
+            Err(err) => Err(err),
+        }
+    });
+    let (data_proof, succinct_response) = join!(data_proof_response_fut, succinct_response_fut);
+    let data_proof_res: KateQueryDataProofResponse = match data_proof {
+        Ok(resp) => match resp {
+            Ok(data) => data,
+            Err(err) => {
+                let err_str = err.to_string();
+                let is_warn = err_str.contains("Missing block")
+                    || err_str.contains("Cannot fetch tx data")
+                    || err_str.contains("is not finalized");
+
+                if is_warn {
+                    tracing::warn!("❌ Cannot get kate data proof response: {:?}", err);
+                } else {
+                    tracing::error!("❌ Cannot get kate data proof response: {:?}", err);
+                }
+
+                return (
+                    StatusCode::BAD_REQUEST,
+                    [("Cache-Control", "max-age=60, must-revalidate".to_string())],
+                    Json(json!({ "error": err.to_string()})),
+                );
+            }
+        },
+        Err(err) => {
+            tracing::error!("❌ KateQueryDataProofResponse{:?}", err);
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                [("Cache-Control", "max-age=60, must-revalidate".to_string())],
+                Json(json!({ "error": err.to_string()})),
+            );
+        }
+    };
+    let succinct_data = match succinct_response {
+        Ok(data) => match data {
+            Ok(SuccinctAPIResponse {
+                data: Some(data), ..
+            }) => data,
+            Ok(SuccinctAPIResponse {
+                success: Some(false),
+                error: Some(data),
+                ..
+            }) => {
+                if data.contains("not in the range of blocks") {
+                    tracing::warn!(
+                        "⏳ Succinct VectorX contract not updated yet! Response: {}",
+                        data
+                    );
+                } else {
+                    tracing::error!(
+                        "❌ Succinct API returned unsuccessfully. Response: {}",
+                        data
+                    );
+                }
+                return (
+                    StatusCode::NOT_FOUND,
+                    [(
+                        "Cache-Control",
+                        "public, max-age=60, immutable".to_string(),
+                    )],
+                    Json(json!({ "error": data })),
+                );
+            }
+            Err(err) => {
+                tracing::error!("❌SuccinctAPIResponse {:?}", err);
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    [("Cache-Control", "max-age=60, must-revalidate".to_string())],
+                    Json(json!({ "error": err.to_string()})),
+                );
+            }
+            _ => {
+                tracing::error!("❌ Succinct API returned no data");
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    [("Cache-Control", "max-age=60, must-revalidate".to_string())],
+                    Json(json!({ "error": "Succinct API returned no data"})),
+                );
+            }
+        },
+        Err(err) => {
+            tracing::error!("❌ {:?}", err);
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                [("Cache-Control", "max-age=60, must-revalidate".to_string())],
+                Json(json!({ "error": err.to_string()})),
+            );
+        }
+    };
+
+    (
+        StatusCode::OK,
+        [(
+            "Cache-Control",
+            format!("public, max-age={}, immutable", eth_proof_cache_maxage),
+        )],
+        Json(json!(AggregatedResponse {
+            data_root_proof: succinct_data.merkle_branch,
+            leaf_proof: data_proof_res.data_proof.proof,
+            range_hash: succinct_data.range_hash,
+            data_root_index: succinct_data.index,
+            leaf: data_proof_res.data_proof.leaf,
+            leaf_index: data_proof_res.data_proof.leaf_index,
+            data_root: data_proof_res.data_proof.roots.data_root,
+            blob_root: data_proof_res.data_proof.roots.blob_root,
+            bridge_root: data_proof_res.data_proof.roots.bridge_root,
+            data_root_commitment: succinct_data.data_commitment,
+            block_hash,
+            message: data_proof_res.message
+        })),
+    )
+}
+
+async fn get_chain_head(State(state): State<Arc<AppState>>, chain_id: ChainId) -> Result<u64> {
+    let chain = match state.chains.get(&chain_id) {
+        Some(chain) => chain,
+        None => {
+            return Err(anyhow::anyhow!("Chain not found"));
+        }
+    };
+
+    let provider = match ProviderBuilder::new().connect(&chain.rpc_url).await {
+        Ok(provider) => provider,
+        Err(err) => {
+            tracing::error!("❌ Cannot connect to provider: {:?}", err);
+            return Err(err.into());
+        }
+    };
+
+    let contract = SP1Vector::new(chain.contract_address, provider);
+
+    match contract.latestBlock().call().await {
+        Ok(head) => {
+            tracing::debug!("✅ Latest block on chain {}: {}", chain_id, head);
+            Ok(head as u64)
+        }
+        Err(err) => {
+            tracing::error!("❌ Cannot get latest block from contract: {:?}", err);
+            Err(err.into())
+        }
+    }
+}
+
 #[tokio::main]
 async fn main() {
     dotenvy::dotenv().ok();
@@ -850,16 +1082,16 @@ async fn main() {
         .unwrap_or(1024);
 
     // Connection pool
-    let connections_string = format!(
-        "postgresql://{}:{}@{}/{}",
-        env::var("PG_USERNAME").unwrap_or("myuser".to_owned()),
-        env::var("PG_PASSWORD").unwrap_or("mypassword".to_owned()),
-        env::var("POSTGRES_URL").unwrap_or("localhost:5432".to_owned()),
-        env::var("POSTGRES_DB").unwrap_or("bridge-ui-indexer".to_owned()),
-    );
-    let connection_pool = r2d2::Pool::builder()
-        .build(ConnectionManager::<PgConnection>::new(connections_string))
-        .expect("Failed to create pool.");
+    // let connections_string = format!(
+    //     "postgresql://{}:{}@{}/{}",
+    //     env::var("PG_USERNAME").unwrap_or("myuser".to_owned()),
+    //     env::var("PG_PASSWORD").unwrap_or("mypassword".to_owned()),
+    //     env::var("POSTGRES_URL").unwrap_or("localhost:5432".to_owned()),
+    //     env::var("POSTGRES_DB").unwrap_or("bridge-ui-indexer".to_owned()),
+    // );
+    // let connection_pool = r2d2::Pool::builder()
+    //     .build(ConnectionManager::<PgConnection>::new(connections_string))
+    //     .expect("Failed to create pool.");
     let expected_chain_ids: Vec<u64> = vec![1, 123, 32657, 84532, 11155111, 17000, 421614];
     // loop through expected_chain_ids and store the chain information, if value is missing, skip chain_id
     let chains = expected_chain_ids
@@ -936,7 +1168,7 @@ async fn main() {
             })
             .unwrap_or(60),
         beaconchain_api_key: env::var("BEACONCHAIN_API_KEY").unwrap_or("".to_owned()),
-        connection_pool,
+        // connection_pool,
         chains,
     });
 
@@ -955,11 +1187,12 @@ async fn main() {
             "/v1/avl/proof/{block_hash}/{message_id}",
             get(get_avl_proof),
         )
-        .route("/v1/transactions", get(transactions))
-        .route("/transactions", get(transactions))
+        // .route("/v1/transactions", get(transactions))
+        // .route("/transactions", get(transactions))
         .route("/avl/proof/{block_hash}/{message_id}", get(get_avl_proof))
         .route("/beacon/slot/{slot_number}", get(get_beacon_slot))
         .route("/v1/head/{chain_id}", get(get_head))
+        .route("/v1/proof/{block_hash}", get(get_proof))
         .layer(TraceLayer::new_for_http())
         .layer(CompressionLayer::new())
         .layer(
