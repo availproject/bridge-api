@@ -12,20 +12,13 @@ env:
 jobs:
   ci:
     runs-on: ubuntu-latest
-    continue-on-error: ${{ matrix.rust == 'nightly' }}
-    strategy:
-      fail-fast: false
-      matrix:
-        rust:
-          - stable
-          - beta
-          
+    
     steps:
       - uses: actions/checkout@v4
 
       - uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: ${{ matrix.rust }}
+          toolchain: stable
           components: rustfmt
       - uses: Swatinem/rust-cache@v2
         with:
