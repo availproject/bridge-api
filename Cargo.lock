@@ -1619,7 +1619,7 @@ dependencies = [
 
 [[package]]
 name = "bridge-api"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "alloy",
  "anyhow",

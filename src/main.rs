@@ -3,36 +3,36 @@ mod schema;
 use crate::models::{AvailSend, EthereumSend, StatusEnum};
 use crate::schema::avail_sends::dsl::avail_sends;
 use crate::schema::ethereum_sends::dsl::ethereum_sends;
-use alloy::primitives::{hex, Address, B256, U256};
+use alloy::primitives::{Address, B256, U256, hex};
 use alloy::providers::ProviderBuilder;
 use alloy::sol;
 use anyhow::{Context, Result};
 use avail_core::data_proof::AddressedMessage;
 use axum::{
+    Router,
     extract::{Json, Path, Query, State},
     http::StatusCode,
     response::IntoResponse,
     routing::get,
-    Router,
 };
 use backon::ExponentialBuilder;
 use backon::Retryable;
 use chrono::{NaiveDateTime, Utc};
 use diesel::{
-    r2d2, r2d2::ConnectionManager, ExpressionMethods, PgConnection, QueryDsl, RunQueryDsl,
-    SelectableHelper,
+    ExpressionMethods, PgConnection, QueryDsl, RunQueryDsl, SelectableHelper, r2d2,
+    r2d2::ConnectionManager,
 };
 use http::Method;
 use jsonrpsee::{
-    core::client::ClientT,
     core::ClientError,
+    core::client::ClientT,
     http_client::{HttpClient, HttpClientBuilder},
     rpc_params,
 };
 use lazy_static::lazy_static;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use serde_with::serde_as;
 use sha3::{Digest, Keccak256};
 use sp_core::{Decode, H160, H256};
@@ -62,12 +62,6 @@ sol!(
 );
 
 #[derive(Debug)]
-struct Chain {
-    rpc_url: String,
-    contract_address: Address,
-}
-
-#[derive(Debug)]
 struct AppState {
     avail_client: HttpClient,
     ethereum_client: HttpClient,
@@ -88,6 +82,12 @@ struct AppState {
     beaconchain_api_key: String,
     connection_pool: r2d2::Pool<ConnectionManager<PgConnection>>,
     chains: HashMap<u64, Chain>,
+}
+
+#[derive(Debug)]
+struct Chain {
+    rpc_url: String,
+    contract_address: Address,
 }
 
 #[derive(Deserialize)]
@@ -214,7 +214,6 @@ struct HeadResponseLegacy {
 }
 
 #[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
 struct ChainHeadResponse {
     pub head: u32,
 }
