@@ -17,8 +17,11 @@ use axum::{
 };
 use backon::ExponentialBuilder;
 use backon::Retryable;
-use chrono::{NaiveDateTime, Utc}; 
-use diesel::{PgConnection, RunQueryDsl, ExpressionMethods, r2d2, QueryDsl, SelectableHelper, r2d2::ConnectionManager};
+use chrono::{NaiveDateTime, Utc};
+use diesel::{
+    r2d2, r2d2::ConnectionManager, ExpressionMethods, PgConnection, QueryDsl, RunQueryDsl,
+    SelectableHelper,
+};
 use http::Method;
 use jsonrpsee::{
     core::client::ClientT,
@@ -804,7 +807,10 @@ async fn get_avl_head(State(state): State<Arc<AppState>>) -> impl IntoResponse {
 }
 
 #[inline(always)]
-async fn get_head(Path(chain_id): Path<u64>, State(state): State<Arc<AppState>>) -> impl IntoResponse {
+async fn get_head(
+    Path(chain_id): Path<u64>,
+    State(state): State<Arc<AppState>>,
+) -> impl IntoResponse {
     match state.chains.get(&chain_id) {
         Some(chain) => {
             let provider = match ProviderBuilder::new().connect(&chain.rpc_url).await {
@@ -818,10 +824,7 @@ async fn get_head(Path(chain_id): Path<u64>, State(state): State<Arc<AppState>>)
                     );
                 }
             };
-            let contract = SP1Vector::new(
-                chain.contract_address,
-                provider,
-            );
+            let contract = SP1Vector::new(chain.contract_address, provider);
             match contract.latestBlock().call().await {
                 Ok(head) => {
                     tracing::debug!("✅ Latest block on chain {}: {}", chain_id, head);
@@ -831,9 +834,7 @@ async fn get_head(Path(chain_id): Path<u64>, State(state): State<Arc<AppState>>)
                             "Cache-Control",
                             "public, max-age=600, must-revalidate".to_string(), // since relaying takes 1 hour, we treat 10 minutes as a reasonable cache time
                         )],
-                        Json(json!(ChainHeadResponse {
-                            head,
-                        })),
+                        Json(json!(ChainHeadResponse { head })),
                     )
                 }
                 Err(err) => {
@@ -846,13 +847,14 @@ async fn get_head(Path(chain_id): Path<u64>, State(state): State<Arc<AppState>>)
                 }
             }
         }
-        None => {
-            (
-                StatusCode::BAD_REQUEST,
-                [("Cache-Control", "public, max-age=3600, must-revalidate".to_string())],
-                Json(json!({ "error": "Unsupported chain ID"})),
-            )
-        }
+        None => (
+            StatusCode::BAD_REQUEST,
+            [(
+                "Cache-Control",
+                "public, max-age=3600, must-revalidate".to_string(),
+            )],
+            Json(json!({ "error": "Unsupported chain ID"})),
+        ),
     }
 }
 
@@ -884,23 +886,24 @@ async fn main() {
     let connection_pool = r2d2::Pool::builder()
         .build(ConnectionManager::<PgConnection>::new(connections_string))
         .expect("Failed to create pool.");
-    let expected_chain_ids: Vec<u64> = vec![
-        1, 123, 32657, 84532, 11155111, 17000, 421614
-    ];
+    let expected_chain_ids: Vec<u64> = vec![1, 123, 32657, 84532, 11155111, 17000, 421614];
     // loop through expected_chain_ids and store the chain information, if value is missing, skip chain_id
-    let chains = expected_chain_ids.iter().filter_map(|&chain_id| {
-        let rpc_url = env::var(format!("CHAIN_{}_RPC_URL", chain_id)).ok()?;
-        let contract_address = env::var(format!("CHAIN_{}_CONTRACT_ADDRESS", chain_id))
-            .ok()
-            .and_then(|addr| addr.parse::<Address>().ok())?;
-        Some((
-            chain_id,
-            Chain {
-                rpc_url,
-                contract_address,
-            },
-        ))
-    }).collect::<HashMap<_, _>>();
+    let chains = expected_chain_ids
+        .iter()
+        .filter_map(|&chain_id| {
+            let rpc_url = env::var(format!("CHAIN_{}_RPC_URL", chain_id)).ok()?;
+            let contract_address = env::var(format!("CHAIN_{}_CONTRACT_ADDRESS", chain_id))
+                .ok()
+                .and_then(|addr| addr.parse::<Address>().ok())?;
+            Some((
+                chain_id,
+                Chain {
+                    rpc_url,
+                    contract_address,
+                },
+            ))
+        })
+        .collect::<HashMap<_, _>>();
 
     let shared_state = Arc::new(AppState {
         avail_client: HttpClientBuilder::default()
@@ -959,7 +962,7 @@ async fn main() {
             })
             .unwrap_or(60),
         connection_pool,
-        chains
+        chains,
     });
 
     let app = Router::new()
@@ -973,7 +976,10 @@ async fn main() {
         .route("/eth/head", get(get_eth_head_legacy))
         .route("/v1/avl/head", get(get_avl_head))
         .route("/avl/head", get(get_avl_head))
-        .route("/v1/avl/proof/{block_hash}/{message_id}", get(get_avl_proof))
+        .route(
+            "/v1/avl/proof/{block_hash}/{message_id}",
+            get(get_avl_proof),
+        )
         .route("/v1/transactions", get(transactions))
         .route("/transactions", get(transactions))
         .route("/avl/proof/{block_hash}/{message_id}", get(get_avl_proof))
