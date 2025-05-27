@@ -10,11 +10,11 @@ publish = false
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-alloy-primitives = { version = "0.8", features = ["serde"] }
-axum = { version = "0.7", features = ["http2", "macros", "tracing"] }
+alloy = { version = "1", features = ["serde", "json"] }
+axum = { version = "0.8", features = ["http2", "macros", "tracing"] }
 dotenvy = "0.15"
-jsonrpsee = { version = "0.20", features = ["http-client", "macros", "async-client"] }
-reqwest = { version = "0.11", features = ["json", "brotli"] }
+jsonrpsee = { version = "0.25", features = ["http-client", "macros", "async-client"] }
+reqwest = { version = "0.12", features = ["json", "brotli"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = { version = "1.0", features = ["arbitrary_precision"] }
 sha3 = "0.10"
@@ -29,7 +29,7 @@ http = "1.1"
 backon = { version = "0.5", features = ["tokio-sleep"] }
 anyhow = "1"
 lazy_static = "1.5"
-diesel = { version = "2.2.4", features = ["postgres", "chrono", "r2d2"] }
+diesel = { version = "2.2", features = ["postgres", "chrono", "r2d2"] }
 diesel-enum = "0.2.1"
 serde_with = "3.11.0"
 chrono = { version = "0.4", features = ["serde"] }
