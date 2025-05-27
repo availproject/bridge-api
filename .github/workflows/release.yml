@@ -12,7 +12,7 @@ on:
       - prereleased
 jobs:
   binary_linux_amd64:
-    runs-on: ubuntu-20.04
+    runs-on: ubuntu-latest
     steps:
          - uses: actions/checkout@v4
          - name: Install Cargo Deps And Build Bridge API
@@ -33,7 +33,7 @@ jobs:
 
   binary_publish:
     needs: [binary_linux_amd64]
-    runs-on: ubuntu-20.04
+    runs-on: ubuntu-latest
     steps:
          - uses: actions/download-artifact@v4
            with:
@@ -54,7 +54,7 @@ jobs:
              file_glob: true
 
   docker_build_push:
-    runs-on: ubuntu-20.04
+    runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -83,4 +83,4 @@ jobs:
           push: true
           tags: availj/bridge-api:${{ steps.prepare.outputs.tag_name }}
           build-args: |
-            BUILD_PROFILE=release
+            BUILD_PROFILE=maxperf

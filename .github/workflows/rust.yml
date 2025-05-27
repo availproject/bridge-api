@@ -21,29 +21,18 @@ jobs:
           - beta
           
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
 
-      - uses: actions-rs/toolchain@v1
+      - uses: dtolnay/rust-toolchain@stable
         with:
-          profile: minimal
           toolchain: ${{ matrix.rust }}
-          override: true
           components: rustfmt
-
-      - uses: actions-rs/cargo@v1
+      - uses: Swatinem/rust-cache@v2
         with:
-          command: build
-          args: --release --all-features -v
-
-      - uses: actions-rs/cargo@v1
-        with:
-          command: test
-          args: --all-features -v
-
-      - uses: actions-rs/cargo@v1
-        with:
-          command: fmt
-          args: --all -- --check
+          cache-on-failure: true
+      - run: cargo build --all-features -v
+      - run: cargo test --all-features -v
+      - run: cargo fmt --all -- --check
 # TODO enable security audit once the lib deps are updated.
 #      - name: Security audit
 #        uses: actions-rs/audit-check@v1
