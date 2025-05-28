@@ -924,9 +924,7 @@ async fn get_proof(
             return (
                 StatusCode::NOT_FOUND,
                 [("Cache-Control", "public, max-age=60, immutable".to_string())],
-                Json(
-                    json!({ "error": format!("Provided chain id {:?} not found.", chain_id) }),
-                ),
+                Json(json!({ "error": format!("Provided chain id {:?} not found.", chain_id) })),
             );
         }
     }
@@ -1046,7 +1044,7 @@ fn spawn_kate_proof(
     })
 }
 
-// spawn_merkle_proof_range_fetch fetches merkle proof for range
+// spawn_merkle_proof_range_fetch fetches merkle proof for a block range
 fn spawn_merkle_proof_range_fetch(
     state: Arc<AppState>,
     block_hash: B256,
