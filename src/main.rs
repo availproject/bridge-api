@@ -3,11 +3,13 @@ mod schema;
 use crate::models::{AvailSend, EthereumSend, StatusEnum};
 use crate::schema::avail_sends::dsl::avail_sends;
 use crate::schema::ethereum_sends::dsl::ethereum_sends;
-use alloy::primitives::{Address, B256, ChainId, U256, hex};
+use alloy::primitives::{Address, B256, U256, hex};
 use alloy::providers::ProviderBuilder;
 use alloy::sol;
 use anyhow::{Context, Result};
 use avail_core::data_proof::AddressedMessage;
+use axum::body::{Body, to_bytes};
+use axum::response::Response;
 use axum::{
     Router,
     extract::{Json, Path, Query, State},
@@ -49,7 +51,6 @@ use tower_http::{
     cors::{Any, CorsLayer},
     trace::TraceLayer,
 };
-use tracing::info;
 use tracing_subscriber::prelude::*;
 
 #[cfg(not(target_env = "msvc"))]
@@ -198,22 +199,22 @@ struct AggregatedResponse {
 
 impl AggregatedResponse {
     pub fn new(
-        succinct_data: SuccinctAPIData,
+        range_data: SuccinctAPIData,
         data_proof_res: KateQueryDataProofResponse,
-        block_hash: B256,
+        hash: B256,
     ) -> Self {
         AggregatedResponse {
-            data_root_proof: succinct_data.merkle_branch,
+            data_root_proof: range_data.merkle_branch,
             leaf_proof: data_proof_res.data_proof.proof,
-            range_hash: succinct_data.range_hash,
-            data_root_index: succinct_data.index,
+            range_hash: range_data.range_hash,
+            data_root_index: range_data.index,
             leaf: data_proof_res.data_proof.leaf,
             leaf_index: data_proof_res.data_proof.leaf_index,
             data_root: data_proof_res.data_proof.roots.data_root,
             blob_root: data_proof_res.data_proof.roots.blob_root,
             bridge_root: data_proof_res.data_proof.roots.bridge_root,
-            data_root_commitment: succinct_data.data_commitment,
-            block_hash,
+            data_root_commitment: range_data.data_commitment,
+            block_hash: hash,
             message: data_proof_res.message,
         }
     }
@@ -244,7 +245,7 @@ struct HeadResponseLegacy {
     pub timestamp_diff: u64,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 struct ChainHeadResponse {
     pub head: u32,
 }
@@ -898,8 +899,7 @@ async fn get_proof(
             ),
         );
     } else if let Ok(requested_block) = header_response {
-        let chain_head_rsp = get_chain_head(state.clone(), query_proof.chain_id).await;
-
+        let chain_head_rsp = fetch_chain_head(state.clone(), query_proof.chain_id).await;
         if let Ok(head) = chain_head_rsp {
             if requested_block.number > head {
                 tracing::warn!(
@@ -928,10 +928,8 @@ async fn get_proof(
     }
 
     let data_proof_response_fut = spawn_kate_proof(state.clone(), query_proof.index, block_hash);
-    let eth_proof_cache_maxage = state.eth_proof_cache_maxage;
-    let succinct_response_fut = spawn_succinct_fetch(state.clone(), block_hash);
-
-    let (data_proof, succinct_response) = join!(data_proof_response_fut, succinct_response_fut);
+    let merkle_proof_range_fut = spawn_merkle_proof_range_fetch(state.clone(), block_hash);
+    let (data_proof, range_response) = join!(data_proof_response_fut, merkle_proof_range_fut);
     let data_proof_res: KateQueryDataProofResponse = match data_proof {
         Ok(resp) => match resp {
             Ok(data) => data,
@@ -962,7 +960,7 @@ async fn get_proof(
             );
         }
     };
-    let succinct_data = match succinct_response {
+    let range_data = match range_response {
         Ok(data) => match data {
             Ok(SuccinctAPIResponse {
                 data: Some(data), ..
@@ -1017,16 +1015,20 @@ async fn get_proof(
         StatusCode::OK,
         [(
             "Cache-Control",
-            format!("public, max-age={}, immutable", eth_proof_cache_maxage),
+            format!(
+                "public, max-age={}, immutable",
+                state.eth_proof_cache_maxage
+            ),
         )],
         Json(json!(AggregatedResponse::new(
-            succinct_data,
+            range_data,
             data_proof_res,
             block_hash
         ))),
     )
 }
 
+// spawn_kate_proof fetch queryDataProof from Avail chain
 fn spawn_kate_proof(
     state: Arc<AppState>,
     index: u32,
@@ -1040,7 +1042,8 @@ fn spawn_kate_proof(
     })
 }
 
-fn spawn_succinct_fetch(
+// spawn_merkle_proof_range_fetch fetches merkle proof for range
+fn spawn_merkle_proof_range_fetch(
     state: Arc<AppState>,
     block_hash: B256,
 ) -> JoinHandle<Result<SuccinctAPIResponse, reqwest::Error>> {
@@ -1061,35 +1064,18 @@ fn spawn_succinct_fetch(
     })
 }
 
-async fn get_chain_head(state: Arc<AppState>, chain_id: ChainId) -> Result<u32> {
-    info!("Getting chain head {}", chain_id);
-
-    let chain = match state.chains.get(&chain_id) {
-        Some(chain) => chain,
-        None => {
-            return Err(anyhow::anyhow!("Chain not found"));
-        }
-    };
-    info!("Getting chain head {:?}", chain);
-
-    let provider = match ProviderBuilder::new().connect(&chain.rpc_url).await {
-        Ok(provider) => provider,
-        Err(err) => {
-            tracing::error!("Cannot connect to provider: {:?}", err);
-            return Err(anyhow::anyhow!("Cannot connect to provider"));
-        }
-    };
-
-    let contract = SP1Vector::new(chain.contract_address, provider);
-    match contract.latestBlock().call().await {
-        Ok(head) => {
-            tracing::debug!("Latest block on chain {}: {}", chain_id, head);
-            Ok(head)
-        }
-        Err(err) => {
-            tracing::error!("Cannot get latest block from contract: {:?}", err);
-            Err(anyhow::anyhow!("Cannot get latest block from contract"))
-        }
+async fn fetch_chain_head(state: Arc<AppState>, chain_id: u64) -> Result<u32> {
+    let response: Response<Body> = get_head(Path(chain_id), State(state)).await.into_response();
+    if response.status() != StatusCode::OK {
+        Err(anyhow::anyhow!(
+            "Cannot fetch chain head for chain {}",
+            chain_id
+        ))
+    } else {
+        let body = response.into_body();
+        let b = to_bytes(body, 2048).await?;
+        let body: ChainHeadResponse = serde_json::from_slice(b.to_vec().as_slice())?;
+        Ok(body.head)
     }
 }
 
