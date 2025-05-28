@@ -189,15 +189,15 @@ RUSTFLAGS="-C target-cpu=native" cargo run --profile maxperf
 
 ### Generate Merkle Proof
 
-* To generate a proof, simply query the `v1/proof` endpoint with the block hash and extrinsic index and chain id:
+* To generate a proof, simply query the `v1/proof` endpoint with the mandatory query params block hash, extrinsic index and chain id:
 
     * Request
 
-      `GET /v1/proof/:blockhash?index=&chain_id=`
+      `GET /v1/proof?block_hash=&index=&chain_id=`
 
       ```bash
-      # curl "<endpoint URL>/v1/proof/<blockhash>?index=<tx_index>&chain_id=<chain_id>"
-      curl "http://localhost:8080/v1/proof/0x5bc7bd3a4793132007d6d0d9c55dc2ded2fe721a49bd771c1d290e6a3c6ec237?index=5&chain_id=11155111"
+      # curl "<endpoint URL>/v1/proof?block_hash=<blockhash>&index=<tx_index>&chain_id=<chain_id>"
+      curl "http://localhost:8080/v1/proof?block_hash=0x5bc7bd3a4793132007d6d0d9c55dc2ded2fe721a49bd771c1d290e6a3c6ec237&index=5&chain_id=11155111"
       ```
 
         * Response

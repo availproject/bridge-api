@@ -102,6 +102,7 @@ struct IndexStruct {
 struct ProofQueryStruct {
     index: u32,
     chain_id: u64,
+    block_hash: B256,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -881,10 +882,13 @@ async fn get_head(
 /// get_proof returns a proof from Avail for the provided chain id
 #[inline(always)]
 async fn get_proof(
-    Path(block_hash): Path<B256>,
     Query(query_proof): Query<ProofQueryStruct>,
     State(state): State<Arc<AppState>>,
 ) -> impl IntoResponse {
+    let block_hash = query_proof.block_hash;
+    let chain_id = query_proof.chain_id;
+    let index = query_proof.index;
+
     let header_response: Result<HeaderBlockNumber, ClientError> = state
         .avail_client
         .request("chain_getHeader", rpc_params![block_hash])
@@ -899,7 +903,7 @@ async fn get_proof(
             ),
         );
     } else if let Ok(requested_block) = header_response {
-        let chain_head_rsp = fetch_chain_head(state.clone(), query_proof.chain_id).await;
+        let chain_head_rsp = fetch_chain_head(state.clone(), chain_id).await;
         if let Ok(head) = chain_head_rsp {
             if requested_block.number > head {
                 tracing::warn!(
@@ -921,13 +925,13 @@ async fn get_proof(
                 StatusCode::NOT_FOUND,
                 [("Cache-Control", "public, max-age=60, immutable".to_string())],
                 Json(
-                    json!({ "error": format!("Provided chain id {:?} not found.", query_proof.chain_id) }),
+                    json!({ "error": format!("Provided chain id {:?} not found.", chain_id) }),
                 ),
             );
         }
     }
 
-    let data_proof_response_fut = spawn_kate_proof(state.clone(), query_proof.index, block_hash);
+    let data_proof_response_fut = spawn_kate_proof(state.clone(), index, block_hash);
     let merkle_proof_range_fut = spawn_merkle_proof_range_fetch(state.clone(), block_hash);
     let (data_proof, range_response) = join!(data_proof_response_fut, merkle_proof_range_fut);
     let data_proof_res: KateQueryDataProofResponse = match data_proof {
@@ -1207,7 +1211,7 @@ async fn main() {
         .route("/avl/proof/{block_hash}/{message_id}", get(get_avl_proof))
         .route("/beacon/slot/{slot_number}", get(get_beacon_slot))
         .route("/v1/head/{chain_id}", get(get_head))
-        .route("/v1/proof/{block_hash}", get(get_proof))
+        .route("/v1/proof", get(get_proof))
         .layer(TraceLayer::new_for_http())
         .layer(CompressionLayer::new())
         .layer(
