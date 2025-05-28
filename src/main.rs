@@ -831,7 +831,7 @@ async fn get_head(
                         StatusCode::OK,
                         [(
                             "Cache-Control",
-                            "public, max-age=600, must-revalidate".to_string(), // since relaying takes 1 hour, we treat 10 minutes as a reasonable cache time
+                            "public, max-age=60, must-revalidate".to_string(), // since relaying takes 1 hour, we treat 1 minute as a reasonable cache time
                         )],
                         Json(json!(ChainHeadResponse { head })),
                     )
