@@ -103,7 +103,6 @@ struct AppState {
     eth_proof_failure_cache_maxage: u32,
     slot_mapping_cache_maxage: u32,
     transactions_cache_maxage: u32,
-    beaconchain_api_key: String,
     connection_pool: r2d2::Pool<ConnectionManager<PgConnection>>,
 }
 
@@ -869,7 +868,6 @@ async fn main() {
                 transactions_mapping_response.parse::<u32>().ok()
             })
             .unwrap_or(60),
-        beaconchain_api_key: env::var("BEACONCHAIN_API_KEY").unwrap_or("".to_owned()),
         connection_pool,
     });
 
