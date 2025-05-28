@@ -108,6 +108,7 @@ struct AppState {
     bridge_contract_address: String,
     eth_head_cache_maxage: u16,
     avl_head_cache_maxage: u16,
+    head_cache_maxage: u16,
     avl_proof_cache_maxage: u32,
     eth_proof_cache_maxage: u32,
     eth_proof_failure_cache_maxage: u32,
@@ -831,7 +832,10 @@ async fn get_head(
                         StatusCode::OK,
                         [(
                             "Cache-Control",
-                            "public, max-age=60, must-revalidate".to_string(), // since relaying takes 1 hour, we treat 1 minute as a reasonable cache time
+                            format!(
+                                "public, max-age={}, must-revalidate",
+                                state.head_cache_maxage
+                            ),
                         )],
                         Json(json!(ChainHeadResponse { head })),
                     )
@@ -885,9 +889,9 @@ async fn main() {
     let connection_pool = r2d2::Pool::builder()
         .build(ConnectionManager::<PgConnection>::new(connections_string))
         .expect("Failed to create pool.");
-    let expected_chain_ids: Vec<u64> = vec![1, 123, 32657, 84532, 11155111, 17000, 421614];
+    const SUPPORTED_CHAIN_IDS: [u64; 7] = [1, 123, 32657, 84532, 11155111, 17000, 421614];
     // loop through expected_chain_ids and store the chain information, if value is missing, skip chain_id
-    let chains = expected_chain_ids
+    let chains = SUPPORTED_CHAIN_IDS
         .iter()
         .filter_map(|&chain_id| {
             let rpc_url = env::var(format!("CHAIN_{}_RPC_URL", chain_id)).ok()?;
@@ -938,6 +942,10 @@ async fn main() {
             .ok()
             .and_then(|max_request| max_request.parse::<u16>().ok())
             .unwrap_or(600),
+        head_cache_maxage: env::var("HEAD_CACHE_MAXAGE")
+            .ok()
+            .and_then(|max_request| max_request.parse::<u16>().ok())
+            .unwrap_or(60),
         eth_proof_cache_maxage: env::var("ETH_PROOF_CACHE_MAXAGE")
             .ok()
             .and_then(|proof_response| proof_response.parse::<u32>().ok())
