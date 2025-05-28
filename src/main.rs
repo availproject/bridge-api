@@ -636,7 +636,6 @@ async fn get_beacon_slot(
             "{}/eth/v2/beacon/blocks/{}",
             state.beaconchain_base_url, slot
         ))
-        // .header("apikey", state.beaconchain_api_key.clone())
         .send()
         .await;
 
@@ -988,24 +987,33 @@ async fn track_slot_avail_task(state: Arc<AppState>) -> Result<()> {
 
                 drop(slot_block_head);
 
-                let resp = reqwest::get(format!(
+                let response = reqwest::get(format!(
                     "{}/eth/v2/beacon/blocks/{}",
                     state.beaconchain_base_url, slot
                 ))
                 .await
-                .context("beacon get")?;
-                let res = resp.json::<Root>().await.context("beacon decode")?;
-                let bl = res
+                .context("Cannot get beacon block")?;
+                let root = response
+                    .json::<Root>()
+                    .await
+                    .context("Cannot decode beacon response")?;
+                let bl = root
                     .data
                     .message
                     .body
                     .execution_payload
                     .block_number
                     .parse()?;
-                let h = res.data.message.body.execution_payload.block_hash.parse()?;
+                let hash = root
+                    .data
+                    .message
+                    .body
+                    .execution_payload
+                    .block_hash
+                    .parse()?;
                 let mut slot_block_head = SLOT_BLOCK_HEAD.write().await;
                 tracing::info!("Beacon mapping: {slot}:{bl}");
-                *slot_block_head = Some((slot, bl, h, timestamp));
+                *slot_block_head = Some((slot, bl, hash, timestamp));
                 drop(slot_block_head);
 
                 tokio::time::sleep(Duration::from_secs(60 * 5)).await;
