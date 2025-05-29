@@ -395,7 +395,6 @@ fn map_avail_send_to_transaction_result(send: AvailSend) -> TransactionData {
     }
 }
 
-
 #[inline(always)]
 async fn transactions(
     Query(address_query): Query<TransactionQueryParams>,
@@ -927,7 +926,10 @@ async fn get_proof(
         tracing::error!("Error fetching Avail block. {:?}", err);
         return (
             StatusCode::NOT_FOUND,
-            [("Cache-Control", "public, max-age=60, must-revalidate".to_string())],
+            [(
+                "Cache-Control",
+                "public, max-age=60, must-revalidate".to_string(),
+            )],
             Json(
                 json!({ "error": format!("Cannot fetch {:?} provided Avail block.", block_hash) }),
             ),
@@ -943,7 +945,10 @@ async fn get_proof(
                 );
                 return (
                     StatusCode::NOT_FOUND,
-                    [("Cache-Control", "public, max-age=60, must-revalidate".to_string())],
+                    [(
+                        "Cache-Control",
+                        "public, max-age=60, must-revalidate".to_string(),
+                    )],
                     Json(
                         json!({ "error": format!("Provided block hash {:?} is not yet in the range.", block_hash) }),
                     ),
@@ -953,7 +958,10 @@ async fn get_proof(
             tracing::warn!("Cannot get chain head: {:?}", err);
             return (
                 StatusCode::NOT_FOUND,
-                [("Cache-Control", "public, max-age=360, must-revalidate".to_string())],
+                [(
+                    "Cache-Control",
+                    "public, max-age=360, must-revalidate".to_string(),
+                )],
                 Json(json!({ "error": format!("Provided chain id {:?} not found.", chain_id) })),
             );
         }
@@ -1012,7 +1020,10 @@ async fn get_proof(
                 }
                 return (
                     StatusCode::NOT_FOUND,
-                    [("Cache-Control", "public, max-age=60, must-revalidate".to_string())],
+                    [(
+                        "Cache-Control",
+                        "public, max-age=60, must-revalidate".to_string(),
+                    )],
                     Json(json!({ "error": data })),
                 );
             }
