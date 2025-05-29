@@ -8,6 +8,8 @@ use alloy::providers::ProviderBuilder;
 use alloy::sol;
 use anyhow::{Context, Result};
 use avail_core::data_proof::AddressedMessage;
+use axum::body::{Body, to_bytes};
+use axum::response::Response;
 use axum::{
     Router,
     extract::{Json, Path, Query, State},
@@ -31,7 +33,7 @@ use jsonrpsee::{
 };
 use lazy_static::lazy_static;
 use reqwest::Client;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::{Value, json};
 use serde_with::serde_as;
 use sha3::{Digest, Keccak256};
@@ -42,6 +44,7 @@ use std::sync::Arc;
 use std::{env, process, time::Duration};
 #[cfg(not(target_env = "msvc"))]
 use tikv_jemallocator::Jemalloc;
+use tokio::task::JoinHandle;
 use tokio::{join, sync::RwLock};
 use tower_http::{
     compression::CompressionLayer,
@@ -74,11 +77,11 @@ struct Data {
 #[derive(Debug, Deserialize)]
 struct Message {
     slot: String,
-    body: Body,
+    body: MessageBody,
 }
 
 #[derive(Debug, Deserialize)]
-struct Body {
+struct MessageBody {
     execution_payload: ExecutionPayload,
 }
 
@@ -111,6 +114,7 @@ struct AppState {
     head_cache_maxage: u16,
     avl_proof_cache_maxage: u32,
     eth_proof_cache_maxage: u32,
+    proof_cache_maxage: u32,
     eth_proof_failure_cache_maxage: u32,
     slot_mapping_cache_maxage: u32,
     transactions_cache_maxage: u32,
@@ -127,6 +131,12 @@ struct Chain {
 #[derive(Deserialize)]
 struct IndexStruct {
     index: u32,
+}
+
+#[derive(Deserialize)]
+struct ProofQueryStruct {
+    index: u32,
+    block_hash: B256,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -206,6 +216,29 @@ struct AggregatedResponse {
     message: Option<AddressedMessage>,
 }
 
+impl AggregatedResponse {
+    pub fn new(
+        range_data: SuccinctAPIData,
+        data_proof_res: KateQueryDataProofResponse,
+        hash: B256,
+    ) -> Self {
+        AggregatedResponse {
+            data_root_proof: range_data.merkle_branch,
+            leaf_proof: data_proof_res.data_proof.proof,
+            range_hash: range_data.range_hash,
+            data_root_index: range_data.index,
+            leaf: data_proof_res.data_proof.leaf,
+            leaf_index: data_proof_res.data_proof.leaf_index,
+            data_root: data_proof_res.data_proof.roots.data_root,
+            blob_root: data_proof_res.data_proof.roots.blob_root,
+            bridge_root: data_proof_res.data_proof.roots.bridge_root,
+            data_root_commitment: range_data.data_commitment,
+            block_hash: hash,
+            message: data_proof_res.message,
+        }
+    }
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct EthProofResponse {
@@ -231,7 +264,7 @@ struct HeadResponseLegacy {
     pub timestamp_diff: u64,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 struct ChainHeadResponse {
     pub head: u32,
 }
@@ -247,6 +280,20 @@ struct RangeBlocks {
 #[serde(rename_all = "camelCase")]
 struct RangeBlocksAPIResponse {
     data: RangeBlocks,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct HeaderBlockNumber {
+    #[serde(deserialize_with = "hex_to_u32")]
+    pub number: u32,
+}
+
+fn hex_to_u32<'de, D>(deserializer: D) -> Result<u32, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let s: &str = Deserialize::deserialize(deserializer)?;
+    u32::from_str_radix(s.trim_start_matches("0x"), 16).map_err(serde::de::Error::custom)
 }
 
 async fn alive() -> Result<Json<Value>, StatusCode> {
@@ -861,6 +908,218 @@ async fn get_head(
     }
 }
 
+/// get_proof returns a proof from Avail for the provided chain id
+#[inline(always)]
+async fn get_proof(
+    Path(chain_id): Path<u64>,
+    Query(query_proof): Query<ProofQueryStruct>,
+    State(state): State<Arc<AppState>>,
+) -> impl IntoResponse {
+    let block_hash = query_proof.block_hash;
+    let index = query_proof.index;
+
+    let header_response: Result<HeaderBlockNumber, ClientError> = state
+        .avail_client
+        .request("chain_getHeader", rpc_params![block_hash])
+        .await;
+    if let Err(err) = header_response {
+        tracing::error!("Error fetching Avail block. {:?}", err);
+        return (
+            StatusCode::NOT_FOUND,
+            [(
+                "Cache-Control",
+                "public, max-age=60, must-revalidate".to_string(),
+            )],
+            Json(
+                json!({ "error": format!("Cannot fetch {:?} provided Avail block.", block_hash) }),
+            ),
+        );
+    } else if let Ok(requested_block) = header_response {
+        let chain_head_rsp = fetch_chain_head(state.clone(), chain_id).await;
+        if let Ok(head) = chain_head_rsp {
+            if requested_block.number > head {
+                tracing::warn!(
+                    "Contract not yet synced for the provided block hash {}, the last synced block number {}",
+                    block_hash,
+                    head
+                );
+                return (
+                    StatusCode::NOT_FOUND,
+                    [(
+                        "Cache-Control",
+                        "public, max-age=60, must-revalidate".to_string(),
+                    )],
+                    Json(
+                        json!({ "error": format!("Provided block hash {:?} is not yet in the range.", block_hash) }),
+                    ),
+                );
+            }
+        } else if let Err(err) = chain_head_rsp {
+            tracing::warn!("Cannot get chain head: {:?}", err);
+            return (
+                StatusCode::NOT_FOUND,
+                [(
+                    "Cache-Control",
+                    "public, max-age=360, must-revalidate".to_string(),
+                )],
+                Json(json!({ "error": format!("Provided chain id {:?} not found.", chain_id) })),
+            );
+        }
+    }
+
+    let data_proof_response_fut = spawn_kate_proof(state.clone(), index, block_hash);
+    let merkle_proof_range_fut = spawn_merkle_proof_range_fetch(state.clone(), block_hash);
+    let (data_proof, range_response) = join!(data_proof_response_fut, merkle_proof_range_fut);
+    let data_proof_res: KateQueryDataProofResponse = match data_proof {
+        Ok(resp) => match resp {
+            Ok(data) => data,
+            Err(err) => {
+                let err_str = err.to_string();
+                let is_warn = err_str.contains("Missing block")
+                    || err_str.contains("Cannot fetch tx data")
+                    || err_str.contains("is not finalized");
+                if is_warn {
+                    tracing::warn!("Cannot get kate data proof response: {:?}", err);
+                } else {
+                    tracing::error!("Cannot get kate data proof response: {:?}", err);
+                }
+
+                return (
+                    StatusCode::BAD_REQUEST,
+                    [("Cache-Control", "max-age=60, must-revalidate".to_string())],
+                    Json(json!({ "error": err.to_string()})),
+                );
+            }
+        },
+        Err(err) => {
+            tracing::error!("Cannot fetch kate query data proof response {:?}", err);
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                [("Cache-Control", "max-age=60, must-revalidate".to_string())],
+                Json(json!({ "error": err.to_string()})),
+            );
+        }
+    };
+    let range_data = match range_response {
+        Ok(data) => match data {
+            Ok(SuccinctAPIResponse {
+                data: Some(data), ..
+            }) => data,
+            Ok(SuccinctAPIResponse {
+                success: Some(false),
+                error: Some(data),
+                ..
+            }) => {
+                if data.contains("not in the range of blocks") {
+                    tracing::warn!(
+                        "Succinct VectorX contract not updated yet! Response: {}",
+                        data
+                    );
+                } else {
+                    tracing::error!("Succinct API returned unsuccessfully. Response: {}", data);
+                }
+                return (
+                    StatusCode::NOT_FOUND,
+                    [(
+                        "Cache-Control",
+                        "public, max-age=60, must-revalidate".to_string(),
+                    )],
+                    Json(json!({ "error": data })),
+                );
+            }
+            Err(err) => {
+                tracing::error!("Cannot get succinct api response {:?}", err);
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    [("Cache-Control", "max-age=60, must-revalidate".to_string())],
+                    Json(json!({ "error": err.to_string()})),
+                );
+            }
+            _ => {
+                tracing::error!("Succinct API returned no data");
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    [("Cache-Control", "max-age=60, must-revalidate".to_string())],
+                    Json(json!({ "error": "Succinct API returned no data"})),
+                );
+            }
+        },
+        Err(err) => {
+            tracing::error!("Cannot get merkle proof response {:?}", err);
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                [("Cache-Control", "max-age=60, must-revalidate".to_string())],
+                Json(json!({ "error": err.to_string()})),
+            );
+        }
+    };
+
+    (
+        StatusCode::OK,
+        [(
+            "Cache-Control",
+            format!("public, max-age={}, immutable", state.proof_cache_maxage),
+        )],
+        Json(json!(AggregatedResponse::new(
+            range_data,
+            data_proof_res,
+            block_hash
+        ))),
+    )
+}
+
+// spawn_kate_proof fetch queryDataProof from Avail chain
+fn spawn_kate_proof(
+    state: Arc<AppState>,
+    index: u32,
+    block_hash: B256,
+) -> JoinHandle<Result<KateQueryDataProofResponse, ClientError>> {
+    tokio::spawn(async move {
+        state
+            .avail_client
+            .request("kate_queryDataProof", rpc_params![index, &block_hash])
+            .await
+    })
+}
+
+// spawn_merkle_proof_range_fetch fetches merkle proof for a block range
+fn spawn_merkle_proof_range_fetch(
+    state: Arc<AppState>,
+    block_hash: B256,
+) -> JoinHandle<Result<SuccinctAPIResponse, reqwest::Error>> {
+    let url = format!(
+        "{}?chainName={}&contractChainId={}&contractAddress={}&blockHash={}",
+        state.succinct_base_url,
+        state.avail_chain_name,
+        state.contract_chain_id,
+        state.contract_address,
+        block_hash
+    );
+    tokio::spawn(async move {
+        let res = state.request_client.get(url).send().await;
+        match res {
+            Ok(resp) => resp.json::<SuccinctAPIResponse>().await,
+            Err(e) => Err(e),
+        }
+    })
+}
+
+// fetch_chain_head returns current state of the chain head on the chain with provided chain id
+async fn fetch_chain_head(state: Arc<AppState>, chain_id: u64) -> Result<u32> {
+    let response: Response<Body> = get_head(Path(chain_id), State(state)).await.into_response();
+    if response.status() != StatusCode::OK {
+        Err(anyhow::anyhow!(
+            "Cannot fetch chain head for chain {}",
+            chain_id
+        ))
+    } else {
+        let body = response.into_body();
+        let b = to_bytes(body, 2048).await?;
+        let body: ChainHeadResponse = serde_json::from_slice(b.to_vec().as_slice())?;
+        Ok(body.head)
+    }
+}
+
 #[tokio::main]
 async fn main() {
     dotenvy::dotenv().ok();
@@ -950,6 +1209,10 @@ async fn main() {
             .ok()
             .and_then(|proof_response| proof_response.parse::<u32>().ok())
             .unwrap_or(172800),
+        proof_cache_maxage: env::var("PROOF_CACHE_MAXAGE")
+            .ok()
+            .and_then(|proof_response| proof_response.parse::<u32>().ok())
+            .unwrap_or(172800),
         eth_proof_failure_cache_maxage: env::var("ETH_PROOF_FAILURE_CACHE_MAXAGE")
             .ok()
             .and_then(|proof_response| proof_response.parse::<u32>().ok())
@@ -992,6 +1255,7 @@ async fn main() {
         .route("/avl/proof/{block_hash}/{message_id}", get(get_avl_proof))
         .route("/beacon/slot/{slot_number}", get(get_beacon_slot))
         .route("/v1/head/{chain_id}", get(get_head))
+        .route("/v1/proof/{chain_id}", get(get_proof))
         .layer(TraceLayer::new_for_http())
         .layer(CompressionLayer::new())
         .layer(
