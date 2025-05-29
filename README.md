@@ -210,11 +210,11 @@ RUSTFLAGS="-C target-cpu=native" cargo run --profile maxperf
 
     * Request
 
-      `GET /v1/proof?block_hash=&index=&chain_id=`
+      `GET /v1/proof/<chain_id>?block_hash=&index=`
 
       ```bash
-      # curl "<endpoint URL>/v1/proof?block_hash=<blockhash>&index=<tx_index>&chain_id=<chain_id>"
-      curl "http://localhost:8080/v1/proof?block_hash=0x5bc7bd3a4793132007d6d0d9c55dc2ded2fe721a49bd771c1d290e6a3c6ec237&index=5&chain_id=11155111"
+      # curl "<endpoint URL>/v1/proof/<chain_id>?block_hash=<blockhash>&index=<tx_index>"
+      curl "http://localhost:8080/v1/proof/11155111?block_hash=0x5bc7bd3a4793132007d6d0d9c55dc2ded2fe721a49bd771c1d290e6a3c6ec237&index=5"
       ```
 
         * Response
