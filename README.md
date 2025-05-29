@@ -130,6 +130,23 @@ RUSTFLAGS="-C target-cpu=native" cargo run --profile maxperf
       }
       ```
 
+### Get SP1Vector head
+* To get the latest Avail block stored on an SP1Vector contract instance, query:
+    * Request
+      `GET /v1/head/{chain_id}`
+
+      ```bash
+      # curl <endpoint URL>/v1/head/{chain_id}
+      curl http://localhost:8080/v1/head/{chain_id}
+      ```
+        * Response
+
+      ```json
+      {
+        "head": 123456
+      }
+      ```
+
 ### Generate Merkle Proof
 
 * To generate a proof, simply query the `eth/proof` endpoint with the block hash and extrinsic index like (both are
@@ -304,4 +321,3 @@ RUSTFLAGS="-C target-cpu=native" cargo run --profile maxperf
 ### Examples of using bridge api 
 
 *  We have prepared a set of examples written in Rust and Typescript to help you understand how to use bridge api. You can explore these examples by visiting our [code examples repository](https://github.com/availproject/avail-bridge-examples).
-

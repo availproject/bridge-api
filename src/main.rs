@@ -1,28 +1,30 @@
 mod models;
 mod schema;
-use diesel::{r2d2, QueryDsl, SelectableHelper};
-
 use crate::models::{AvailSend, EthereumSend, StatusEnum};
 use crate::schema::avail_sends::dsl::avail_sends;
 use crate::schema::ethereum_sends::dsl::ethereum_sends;
-use alloy_primitives::{hex, B256, U256};
+use alloy::primitives::{Address, B256, U256, hex};
+use alloy::providers::ProviderBuilder;
+use alloy::sol;
 use anyhow::{Context, Result};
 use avail_core::data_proof::AddressedMessage;
 use axum::{
+    Router,
     extract::{Json, Path, Query, State},
     http::StatusCode,
     response::IntoResponse,
     routing::get,
-    Router,
 };
 use backon::ExponentialBuilder;
 use backon::Retryable;
 use chrono::{NaiveDateTime, Utc};
-use diesel::r2d2::ConnectionManager;
-use diesel::ExpressionMethods;
-use diesel::{PgConnection, RunQueryDsl};
+use diesel::{
+    ExpressionMethods, PgConnection, QueryDsl, RunQueryDsl, SelectableHelper, r2d2,
+    r2d2::ConnectionManager,
+};
 use http::Method;
 use jsonrpsee::{
+    core::ClientError,
     core::client::ClientT,
     http_client::{HttpClient, HttpClientBuilder},
     rpc_params,
@@ -30,11 +32,12 @@ use jsonrpsee::{
 use lazy_static::lazy_static;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use serde_with::serde_as;
 use sha3::{Digest, Keccak256};
 use sp_core::{Decode, H160, H256};
 use sp_io::hashing::twox_128;
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::{env, process, time::Duration};
 #[cfg(not(target_env = "msvc"))]
@@ -50,6 +53,13 @@ use tracing_subscriber::prelude::*;
 #[cfg(not(target_env = "msvc"))]
 #[global_allocator]
 static GLOBAL: Jemalloc = Jemalloc;
+
+sol!(
+    #[allow(missing_docs)]
+    #[sol(rpc)]
+    SP1Vector,
+    "src/abi/SP1Vector.json"
+);
 
 #[derive(Debug, Deserialize)]
 struct Root {
@@ -98,12 +108,20 @@ struct AppState {
     bridge_contract_address: String,
     eth_head_cache_maxage: u16,
     avl_head_cache_maxage: u16,
+    head_cache_maxage: u16,
     avl_proof_cache_maxage: u32,
     eth_proof_cache_maxage: u32,
     eth_proof_failure_cache_maxage: u32,
     slot_mapping_cache_maxage: u32,
     transactions_cache_maxage: u32,
     connection_pool: r2d2::Pool<ConnectionManager<PgConnection>>,
+    chains: HashMap<u64, Chain>,
+}
+
+#[derive(Debug)]
+struct Chain {
+    rpc_url: String,
+    contract_address: Address,
 }
 
 #[derive(Deserialize)]
@@ -211,6 +229,11 @@ struct HeadResponseLegacy {
     pub slot: u64,
     pub timestamp: u64,
     pub timestamp_diff: u64,
+}
+
+#[derive(Serialize)]
+struct ChainHeadResponse {
+    pub head: u32,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -577,7 +600,7 @@ async fn get_avl_proof(
         .concat(),
     );
     let result = hasher.finalize();
-    let proof: Result<AccountStorageProofResponse, jsonrpsee::core::Error> = state
+    let proof: Result<AccountStorageProofResponse, ClientError> = state
         .ethereum_client
         .request(
             "eth_getProof",
@@ -783,6 +806,61 @@ async fn get_avl_head(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     }
 }
 
+#[inline(always)]
+async fn get_head(
+    Path(chain_id): Path<u64>,
+    State(state): State<Arc<AppState>>,
+) -> impl IntoResponse {
+    match state.chains.get(&chain_id) {
+        Some(chain) => {
+            let provider = match ProviderBuilder::new().connect(&chain.rpc_url).await {
+                Ok(provider) => provider,
+                Err(err) => {
+                    tracing::error!("❌ Cannot connect to provider: {:?}", err);
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        [("Cache-Control", "max-age=60, must-revalidate".to_string())],
+                        Json(json!({ "error": err.to_string()})),
+                    );
+                }
+            };
+            let contract = SP1Vector::new(chain.contract_address, provider);
+            match contract.latestBlock().call().await {
+                Ok(head) => {
+                    tracing::debug!("✅ Latest block on chain {}: {}", chain_id, head);
+                    (
+                        StatusCode::OK,
+                        [(
+                            "Cache-Control",
+                            format!(
+                                "public, max-age={}, must-revalidate",
+                                state.head_cache_maxage
+                            ),
+                        )],
+                        Json(json!(ChainHeadResponse { head })),
+                    )
+                }
+                Err(err) => {
+                    tracing::error!("❌ Cannot get latest block from contract: {:?}", err);
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        [("Cache-Control", "max-age=60, must-revalidate".to_string())],
+                        Json(json!({ "error": err.to_string()})),
+                    )
+                }
+            }
+        }
+        None => (
+            StatusCode::BAD_REQUEST,
+            [(
+                "Cache-Control",
+                "public, max-age=3600, must-revalidate".to_string(),
+            )],
+            Json(json!({ "error": "Unsupported chain ID"})),
+        ),
+    }
+}
+
 #[tokio::main]
 async fn main() {
     dotenvy::dotenv().ok();
@@ -811,6 +889,24 @@ async fn main() {
     let connection_pool = r2d2::Pool::builder()
         .build(ConnectionManager::<PgConnection>::new(connections_string))
         .expect("Failed to create pool.");
+    const SUPPORTED_CHAIN_IDS: [u64; 7] = [1, 123, 32657, 84532, 11155111, 17000, 421614];
+    // loop through expected_chain_ids and store the chain information, if value is missing, skip chain_id
+    let chains = SUPPORTED_CHAIN_IDS
+        .iter()
+        .filter_map(|&chain_id| {
+            let rpc_url = env::var(format!("CHAIN_{}_RPC_URL", chain_id)).ok()?;
+            let contract_address = env::var(format!("CHAIN_{}_CONTRACT_ADDRESS", chain_id))
+                .ok()
+                .and_then(|addr| addr.parse::<Address>().ok())?;
+            Some((
+                chain_id,
+                Chain {
+                    rpc_url,
+                    contract_address,
+                },
+            ))
+        })
+        .collect::<HashMap<_, _>>();
 
     let shared_state = Arc::new(AppState {
         avail_client: HttpClientBuilder::default()
@@ -846,6 +942,10 @@ async fn main() {
             .ok()
             .and_then(|max_request| max_request.parse::<u16>().ok())
             .unwrap_or(600),
+        head_cache_maxage: env::var("HEAD_CACHE_MAXAGE")
+            .ok()
+            .and_then(|max_request| max_request.parse::<u16>().ok())
+            .unwrap_or(60),
         eth_proof_cache_maxage: env::var("ETH_PROOF_CACHE_MAXAGE")
             .ok()
             .and_then(|proof_response| proof_response.parse::<u32>().ok())
@@ -869,6 +969,7 @@ async fn main() {
             })
             .unwrap_or(60),
         connection_pool,
+        chains,
     });
 
     let app = Router::new()
@@ -876,17 +977,21 @@ async fn main() {
         .route("/versions", get(versions))
         .route("/v1/info", get(info))
         .route("/info", get(info))
-        .route("/v1/eth/proof/:block_hash", get(get_eth_proof))
-        .route("/eth/proof/:block_hash", get(get_eth_proof))
+        .route("/v1/eth/proof/{block_hash}", get(get_eth_proof))
+        .route("/eth/proof/{block_hash}", get(get_eth_proof))
         .route("/v1/eth/head", get(get_eth_head))
         .route("/eth/head", get(get_eth_head_legacy))
         .route("/v1/avl/head", get(get_avl_head))
         .route("/avl/head", get(get_avl_head))
-        .route("/v1/avl/proof/:block_hash/:message_id", get(get_avl_proof))
+        .route(
+            "/v1/avl/proof/{block_hash}/{message_id}",
+            get(get_avl_proof),
+        )
         .route("/v1/transactions", get(transactions))
         .route("/transactions", get(transactions))
-        .route("/avl/proof/:block_hash/:message_id", get(get_avl_proof))
-        .route("/beacon/slot/:slot_number", get(get_beacon_slot))
+        .route("/avl/proof/{block_hash}/{message_id}", get(get_avl_proof))
+        .route("/beacon/slot/{slot_number}", get(get_beacon_slot))
+        .route("/v1/head/{chain_id}", get(get_head))
         .layer(TraceLayer::new_for_http())
         .layer(CompressionLayer::new())
         .layer(
@@ -906,10 +1011,10 @@ async fn main() {
         tracing::info!("Starting head tracking task");
         if let Err(e) = track_slot_avail_task(shared_state.clone()).await {
             tracing::error!("Error occurred, cannot continue: {e:#}");
-            process::exit(-1);
+            process::exit(1);
         }
     });
-    tracing::info!("🚀 Listening on {} port {}", host, port);
+    tracing::info!("🚀 Started server on host {} with port {}", host, port);
     axum::serve(listener, app).await.unwrap();
 }
 
