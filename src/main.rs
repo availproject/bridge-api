@@ -64,6 +64,40 @@ sol!(
     "src/abi/SP1Vector.json"
 );
 
+#[derive(Debug, Deserialize)]
+struct Root {
+    data: Data,
+}
+
+#[derive(Debug, Deserialize)]
+struct Data {
+    message: Message,
+}
+
+#[derive(Debug, Deserialize)]
+struct Message {
+    slot: String,
+    body: MessageBody,
+}
+
+#[derive(Debug, Deserialize)]
+struct MessageBody {
+    execution_payload: ExecutionPayload,
+}
+
+#[derive(Debug, Deserialize)]
+struct ExecutionPayload {
+    block_number: String,
+    block_hash: String,
+}
+
+#[derive(Debug, serde::Serialize)]
+struct BlockSummary {
+    slot: String,
+    block_number: String,
+    block_hash: String,
+}
+
 #[derive(Debug)]
 struct AppState {
     avail_client: HttpClient,
@@ -77,13 +111,13 @@ struct AppState {
     bridge_contract_address: String,
     eth_head_cache_maxage: u16,
     avl_head_cache_maxage: u16,
+    head_cache_maxage: u16,
     avl_proof_cache_maxage: u32,
     eth_proof_cache_maxage: u32,
     proof_cache_maxage: u32,
     eth_proof_failure_cache_maxage: u32,
     slot_mapping_cache_maxage: u32,
     transactions_cache_maxage: u32,
-    beaconchain_api_key: String,
     connection_pool: r2d2::Pool<ConnectionManager<PgConnection>>,
     chains: HashMap<u64, Chain>,
 }
@@ -150,27 +184,11 @@ struct SuccinctAPIResponse {
     success: Option<bool>,
 }
 
-#[derive(Deserialize)]
-struct BeaconAPIResponse {
-    status: String,
-    data: BeaconAPIResponseData,
-}
-
-#[derive(Deserialize, Serialize)]
-struct BeaconAPIResponseData {
-    blockroot: B256,
-    exec_block_number: u32,
-    epoch: u32,
-    slot: u32,
-    exec_state_root: B256,
-    exec_block_hash: B256,
-}
-
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct SlotMappingResponse {
-    block_hash: B256,
-    block_number: u32,
+    block_hash: String,
+    block_number: String,
 }
 
 #[derive(Deserialize)]
@@ -506,7 +524,17 @@ async fn get_eth_proof(
         Ok(resp) => match resp {
             Ok(data) => data,
             Err(err) => {
-                tracing::error!("❌ Cannot get kate data proof response: {:?}", err);
+                let err_str = err.to_string();
+                let is_warn = err_str.contains("Missing block")
+                    || err_str.contains("Cannot fetch tx data")
+                    || err_str.contains("is not finalized");
+
+                if is_warn {
+                    tracing::warn!("❌ Cannot get kate data proof response: {:?}", err);
+                } else {
+                    tracing::error!("❌ Cannot get kate data proof response: {:?}", err);
+                }
+
                 return (
                     StatusCode::BAD_REQUEST,
                     [("Cache-Control", "max-age=60, must-revalidate".to_string())],
@@ -533,7 +561,17 @@ async fn get_eth_proof(
                 error: Some(data),
                 ..
             }) => {
-                tracing::error!("❌ Succinct API returned unsuccessfully");
+                if data.contains("not in the range of blocks") {
+                    tracing::warn!(
+                        "⏳ Succinct VectorX contract not updated yet! Response: {}",
+                        data
+                    );
+                } else {
+                    tracing::error!(
+                        "❌ Succinct API returned unsuccessfully. Response: {}",
+                        data
+                    );
+                }
                 return (
                     StatusCode::NOT_FOUND,
                     [(
@@ -664,43 +702,31 @@ async fn get_beacon_slot(
 ) -> impl IntoResponse {
     let resp = state
         .request_client
-        .get(format!("{}/{}", state.beaconchain_base_url, slot))
-        .header("apikey", state.beaconchain_api_key.clone())
+        .get(format!(
+            "{}/eth/v2/beacon/blocks/{}",
+            state.beaconchain_base_url, slot
+        ))
         .send()
         .await;
 
     match resp {
         Ok(ok) => {
-            let response_data = ok.json::<BeaconAPIResponse>().await;
+            let response_data = ok.json::<Root>().await;
             match response_data {
-                Ok(rsp_data) => {
-                    if rsp_data.status == "OK" {
-                        (
-                            StatusCode::OK,
-                            [(
-                                "Cache-Control",
-                                format!(
-                                    "public, max-age={}, immutable",
-                                    state.slot_mapping_cache_maxage
-                                ),
-                            )],
-                            Json(json!(SlotMappingResponse {
-                                block_number: rsp_data.data.exec_block_number,
-                                block_hash: rsp_data.data.exec_block_hash
-                            })),
-                        )
-                    } else {
-                        tracing::error!(
-                            "❌ Beacon API returned unsuccessfully: {:?}",
-                            rsp_data.status
-                        );
-                        (
-                            StatusCode::INTERNAL_SERVER_ERROR,
-                            [("Cache-Control", "max-age=60, must-revalidate".to_string())],
-                            Json(json!({ "error": "Cannot fetch slot data"})),
-                        )
-                    }
-                }
+                Ok(rsp_data) => (
+                    StatusCode::OK,
+                    [(
+                        "Cache-Control",
+                        format!(
+                            "public, max-age={}, immutable",
+                            state.slot_mapping_cache_maxage
+                        ),
+                    )],
+                    Json(json!(SlotMappingResponse {
+                        block_number: rsp_data.data.message.body.execution_payload.block_number,
+                        block_hash: rsp_data.data.message.body.execution_payload.block_hash
+                    })),
+                ),
                 Err(err) => {
                     tracing::error!("❌ Cannot get beacon API response data: {:?}", err);
                     (
@@ -1108,9 +1134,9 @@ async fn main() {
     let connection_pool = r2d2::Pool::builder()
         .build(ConnectionManager::<PgConnection>::new(connections_string))
         .expect("Failed to create pool.");
-    let expected_chain_ids: Vec<u64> = vec![1, 123, 32657, 84532, 11155111, 17000, 421614];
+    const SUPPORTED_CHAIN_IDS: [u64; 7] = [1, 123, 32657, 84532, 11155111, 17000, 421614];
     // loop through expected_chain_ids and store the chain information, if value is missing, skip chain_id
-    let chains = expected_chain_ids
+    let chains = SUPPORTED_CHAIN_IDS
         .iter()
         .filter_map(|&chain_id| {
             let rpc_url = env::var(format!("CHAIN_{}_RPC_URL", chain_id)).ok()?;
@@ -1161,6 +1187,10 @@ async fn main() {
             .ok()
             .and_then(|max_request| max_request.parse::<u16>().ok())
             .unwrap_or(600),
+        head_cache_maxage: env::var("HEAD_CACHE_MAXAGE")
+            .ok()
+            .and_then(|max_request| max_request.parse::<u16>().ok())
+            .unwrap_or(60),
         eth_proof_cache_maxage: env::var("ETH_PROOF_CACHE_MAXAGE")
             .ok()
             .and_then(|proof_response| proof_response.parse::<u32>().ok())
@@ -1187,7 +1217,6 @@ async fn main() {
                 transactions_mapping_response.parse::<u32>().ok()
             })
             .unwrap_or(60),
-        beaconchain_api_key: env::var("BEACONCHAIN_API_KEY").unwrap_or("".to_owned()),
         connection_pool,
         chains,
     });
@@ -1311,18 +1340,33 @@ async fn track_slot_avail_task(state: Arc<AppState>) -> Result<()> {
 
                 drop(slot_block_head);
 
-                let resp = reqwest::get(format!("{}/{}", state.beaconchain_base_url, slot))
+                let response = reqwest::get(format!(
+                    "{}/eth/v2/beacon/blocks/{}",
+                    state.beaconchain_base_url, slot
+                ))
+                .await
+                .context("Cannot get beacon block")?;
+                let root = response
+                    .json::<Root>()
                     .await
-                    .context("beacon get")?;
-                let res = resp
-                    .json::<BeaconAPIResponse>()
-                    .await
-                    .context("beacon decode")?;
-                let bl = res.data.exec_block_number;
-                let h = res.data.exec_block_hash;
+                    .context("Cannot decode beacon response")?;
+                let bl = root
+                    .data
+                    .message
+                    .body
+                    .execution_payload
+                    .block_number
+                    .parse()?;
+                let hash = root
+                    .data
+                    .message
+                    .body
+                    .execution_payload
+                    .block_hash
+                    .parse()?;
                 let mut slot_block_head = SLOT_BLOCK_HEAD.write().await;
                 tracing::info!("Beacon mapping: {slot}:{bl}");
-                *slot_block_head = Some((slot, bl as u64, h, timestamp));
+                *slot_block_head = Some((slot, bl, hash, timestamp));
                 drop(slot_block_head);
 
                 tokio::time::sleep(Duration::from_secs(60 * 5)).await;
