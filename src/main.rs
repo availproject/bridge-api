@@ -1,12 +1,13 @@
 mod models;
 mod schema;
+
 use crate::models::{AvailSend, EthereumSend, StatusEnum};
 use crate::schema::avail_sends::dsl::avail_sends;
 use crate::schema::ethereum_sends::dsl::ethereum_sends;
 use alloy::primitives::{Address, B256, U256, hex};
 use alloy::providers::ProviderBuilder;
 use alloy::sol;
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, anyhow};
 use avail_core::data_proof::AddressedMessage;
 use axum::body::{Body, to_bytes};
 use axum::response::Response;
@@ -24,7 +25,7 @@ use diesel::{
     ExpressionMethods, PgConnection, QueryDsl, RunQueryDsl, SelectableHelper, r2d2,
     r2d2::ConnectionManager,
 };
-use http::Method;
+use http::{HeaderMap, HeaderName, HeaderValue, Method};
 use jsonrpsee::{
     core::ClientError,
     core::client::ClientT,
@@ -63,6 +64,78 @@ sol!(
     SP1Vector,
     "src/abi/SP1Vector.json"
 );
+
+struct AppError {
+    pub error: anyhow::Error,
+    pub headers_keypairs: Vec<(String, String)>,
+    pub status_code: Option<StatusCode>,
+}
+
+impl AppError {
+    pub fn new(error: anyhow::Error) -> Self {
+        Self {
+            error,
+            headers_keypairs: vec![],
+            status_code: None,
+        }
+    }
+    pub fn with_status(error: anyhow::Error, status_code: StatusCode) -> Self {
+        Self {
+            error,
+            headers_keypairs: vec![],
+            status_code: Some(status_code),
+        }
+    }
+
+    pub fn with_status_and_headers(
+        error: anyhow::Error,
+        status_code: StatusCode,
+        headers: &[(&str, &str)],
+    ) -> Self {
+        let h = headers
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect::<Vec<_>>();
+        Self {
+            error,
+            headers_keypairs: h,
+            status_code: Some(status_code),
+        }
+    }
+}
+
+// Tell axum how to convert `AppError` into a response.
+impl IntoResponse for AppError {
+    fn into_response(self) -> Response {
+        let status = self
+            .status_code
+            .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+        let mut headermap = HeaderMap::new();
+        for (k, v) in self.headers_keypairs {
+            headermap.insert(
+                HeaderName::try_from(k).unwrap(),
+                HeaderValue::try_from(v).unwrap(),
+            );
+        }
+
+        (status, headermap, format!("{:#}", self.error)).into_response()
+    }
+}
+
+// This enables using `?` on functions that return `Result<_, anyhow::Error>` to turn them into
+// `Result<_, AppError>`. That way you don't need to do that manually.
+impl<E> From<E> for AppError
+where
+    E: Into<anyhow::Error>,
+{
+    fn from(err: E) -> Self {
+        Self {
+            error: err.into(),
+            headers_keypairs: vec![],
+            status_code: None,
+        }
+    }
+}
 
 #[derive(Debug)]
 struct AppState {
@@ -884,136 +957,129 @@ async fn get_head(
 async fn get_proof(
     Query(query_proof): Query<ProofQueryStruct>,
     State(state): State<Arc<AppState>>,
-) -> impl IntoResponse {
+) -> Result<impl IntoResponse, AppError> {
     let block_hash = query_proof.block_hash;
     let chain_id = query_proof.chain_id;
     let index = query_proof.index;
 
-    let header_response: Result<HeaderBlockNumber, ClientError> = state
+    let requested_block: HeaderBlockNumber = state
         .avail_client
         .request("chain_getHeader", rpc_params![block_hash])
-        .await;
-    if let Err(err) = header_response {
-        tracing::error!("Error fetching Avail block. {:?}", err);
-        return (
-            StatusCode::NOT_FOUND,
-            [("Cache-Control", "public, max-age=60, immutable".to_string())],
-            Json(
-                json!({ "error": format!("Cannot fetch {:?} provided Avail block.", block_hash) }),
-            ),
-        );
-    } else if let Ok(requested_block) = header_response {
-        let chain_head_rsp = fetch_chain_head(state.clone(), chain_id).await;
-        if let Ok(head) = chain_head_rsp {
+        .await
+        .map_err(|e| {
+            AppError::with_status(
+                anyhow!("Error fetching Avail block. {e:#}"),
+                StatusCode::NOT_FOUND,
+            )
+        })?;
+    {
+        let head = fetch_chain_head(state.clone(), chain_id)
+            .await
+            .map_err(|e| {
+                AppError::with_status_and_headers(
+                    anyhow!("Cannot get chain head. {e:#}"),
+                    StatusCode::NOT_FOUND,
+                    &[("Cache-Control", "public, max-age=60, immutable")],
+                )
+            })?;
+        {
             if requested_block.number > head {
                 tracing::warn!(
                     "Contract not yet synced for the provided block hash {}, the last synced block number {}",
                     block_hash,
                     head
                 );
-                return (
-                    StatusCode::NOT_FOUND,
-                    [("Cache-Control", "public, max-age=60, immutable".to_string())],
-                    Json(
-                        json!({ "error": format!("Provided block hash {:?} is not yet in the range.", block_hash) }),
+
+                return Err(AppError::with_status_and_headers(
+                    anyhow!(
+                        "Provided block hash {:?} is not yet in the range.",
+                        block_hash
                     ),
-                );
+                    StatusCode::NOT_FOUND,
+                    &[("Cache-Control", "public, max-age=60, immutable")],
+                ));
             }
-        } else if let Err(err) = chain_head_rsp {
-            tracing::warn!("Cannot get chain head: {:?}", err);
-            return (
-                StatusCode::NOT_FOUND,
-                [("Cache-Control", "public, max-age=60, immutable".to_string())],
-                Json(json!({ "error": format!("Provided chain id {:?} not found.", chain_id) })),
-            );
         }
     }
 
     let data_proof_response_fut = spawn_kate_proof(state.clone(), index, block_hash);
     let merkle_proof_range_fut = spawn_merkle_proof_range_fetch(state.clone(), block_hash);
     let (data_proof, range_response) = join!(data_proof_response_fut, merkle_proof_range_fut);
-    let data_proof_res: KateQueryDataProofResponse = match data_proof {
-        Ok(resp) => match resp {
-            Ok(data) => data,
-            Err(err) => {
-                let err_str = err.to_string();
-                let is_warn = err_str.contains("Missing block")
-                    || err_str.contains("Cannot fetch tx data")
-                    || err_str.contains("is not finalized");
-                if is_warn {
-                    tracing::warn!("Cannot get kate data proof response: {:?}", err);
-                } else {
-                    tracing::error!("Cannot get kate data proof response: {:?}", err);
-                }
 
-                return (
-                    StatusCode::BAD_REQUEST,
-                    [("Cache-Control", "max-age=60, must-revalidate".to_string())],
-                    Json(json!({ "error": err.to_string()})),
-                );
-            }
-        },
-        Err(err) => {
-            tracing::error!("Cannot fetch kate query data proof response {:?}", err);
-            return (
+    let data_proof_res = data_proof
+        .map_err(|e| {
+            AppError::with_status_and_headers(
+                anyhow!("error: {e:#}"),
                 StatusCode::INTERNAL_SERVER_ERROR,
-                [("Cache-Control", "max-age=60, must-revalidate".to_string())],
-                Json(json!({ "error": err.to_string()})),
-            );
+                &[("Cache-Control", "max-age=60, must-revalidate")],
+            )
+        })?
+        .map_err(|e| {
+            let err_str = e.to_string();
+            let is_warn = err_str.contains("Missing block")
+                || err_str.contains("Cannot fetch tx data")
+                || err_str.contains("is not finalized");
+            if is_warn {
+                tracing::warn!("Cannot get kate data proof response: {:?}", e);
+            } else {
+                tracing::error!("Cannot get kate data proof response: {:?}", e);
+            }
+            AppError::with_status_and_headers(
+                anyhow!("error: {e:#}"),
+                StatusCode::BAD_REQUEST,
+                &[("Cache-Control", "max-age=60, must-revalidate")],
+            )
+        })?;
+
+    let range_data = match range_response.map_err(|e| {
+        tracing::error!("Cannot get merkle proof response {:?}", e);
+        AppError::with_status_and_headers(
+            anyhow!("error: {e:#}"),
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &[("Cache-Control", "max-age=60, must-revalidate")],
+        )
+    })? {
+        Ok(SuccinctAPIResponse {
+            data: Some(data), ..
+        }) => data,
+        Ok(SuccinctAPIResponse {
+            success: Some(false),
+            error: Some(data),
+            ..
+        }) => {
+            if data.contains("not in the range of blocks") {
+                tracing::warn!(
+                    "Succinct VectorX contract not updated yet! Response: {}",
+                    data
+                );
+            } else {
+                tracing::error!("Succinct API returned unsuccessfully. Response: {}", data);
+            }
+            return Err(AppError::with_status_and_headers(
+                anyhow!("error: {data}"),
+                StatusCode::NOT_FOUND,
+                &[("Cache-Control", "public, max-age=60, immutable")],
+            ));
         }
-    };
-    let range_data = match range_response {
-        Ok(data) => match data {
-            Ok(SuccinctAPIResponse {
-                data: Some(data), ..
-            }) => data,
-            Ok(SuccinctAPIResponse {
-                success: Some(false),
-                error: Some(data),
-                ..
-            }) => {
-                if data.contains("not in the range of blocks") {
-                    tracing::warn!(
-                        "Succinct VectorX contract not updated yet! Response: {}",
-                        data
-                    );
-                } else {
-                    tracing::error!("Succinct API returned unsuccessfully. Response: {}", data);
-                }
-                return (
-                    StatusCode::NOT_FOUND,
-                    [("Cache-Control", "public, max-age=60, immutable".to_string())],
-                    Json(json!({ "error": data })),
-                );
-            }
-            Err(err) => {
-                tracing::error!("Cannot get succinct api response {:?}", err);
-                return (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    [("Cache-Control", "max-age=60, must-revalidate".to_string())],
-                    Json(json!({ "error": err.to_string()})),
-                );
-            }
-            _ => {
-                tracing::error!("Succinct API returned no data");
-                return (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    [("Cache-Control", "max-age=60, must-revalidate".to_string())],
-                    Json(json!({ "error": "Succinct API returned no data"})),
-                );
-            }
-        },
         Err(err) => {
-            tracing::error!("Cannot get merkle proof response {:?}", err);
-            return (
+            tracing::error!("Cannot get succinct api response {:?}", err);
+            return Err(AppError::with_status_and_headers(
+                anyhow!("error: {err}"),
                 StatusCode::INTERNAL_SERVER_ERROR,
-                [("Cache-Control", "max-age=60, must-revalidate".to_string())],
-                Json(json!({ "error": err.to_string()})),
-            );
+                &[("Cache-Control", "max-age=60, must-revalidate")],
+            ));
+        }
+        _ => {
+            tracing::error!("Succinct API returned no data");
+            return Err(AppError::with_status_and_headers(
+                anyhow!("Succinct API returned no data"),
+                StatusCode::INTERNAL_SERVER_ERROR,
+                &[("Cache-Control", "max-age=60, must-revalidate")],
+            ));
         }
     };
 
-    (
+    Ok((
         StatusCode::OK,
         [(
             "Cache-Control",
@@ -1028,6 +1094,7 @@ async fn get_proof(
             block_hash
         ))),
     )
+        .into_response())
 }
 
 // spawn_kate_proof fetch queryDataProof from Avail chain
