@@ -136,7 +136,6 @@ struct IndexStruct {
 #[derive(Deserialize)]
 struct ProofQueryStruct {
     index: u32,
-    chain_id: u64,
     block_hash: B256,
 }
 
@@ -880,7 +879,10 @@ async fn get_head(
                         StatusCode::OK,
                         [(
                             "Cache-Control",
-                            "public, max-age=600, must-revalidate".to_string(), // since relaying takes 1 hour, we treat 10 minutes as a reasonable cache time
+                            format!(
+                                "public, max-age={}, must-revalidate",
+                                state.head_cache_maxage
+                            ),
                         )],
                         Json(json!(ChainHeadResponse { head })),
                     )
@@ -909,11 +911,11 @@ async fn get_head(
 /// get_proof returns a proof from Avail for the provided chain id
 #[inline(always)]
 async fn get_proof(
+    Path(chain_id): Path<u64>,
     Query(query_proof): Query<ProofQueryStruct>,
     State(state): State<Arc<AppState>>,
 ) -> impl IntoResponse {
     let block_hash = query_proof.block_hash;
-    let chain_id = query_proof.chain_id;
     let index = query_proof.index;
 
     let header_response: Result<HeaderBlockNumber, ClientError> = state
@@ -1241,7 +1243,7 @@ async fn main() {
         .route("/avl/proof/{block_hash}/{message_id}", get(get_avl_proof))
         .route("/beacon/slot/{slot_number}", get(get_beacon_slot))
         .route("/v1/head/{chain_id}", get(get_head))
-        .route("/v1/proof", get(get_proof))
+        .route("/v1/proof/{chain_id}", get(get_proof))
         .layer(TraceLayer::new_for_http())
         .layer(CompressionLayer::new())
         .layer(
