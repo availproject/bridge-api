@@ -52,6 +52,7 @@ use tower_http::{
     cors::{Any, CorsLayer},
     trace::TraceLayer,
 };
+use tracing::warn;
 use tracing_subscriber::prelude::*;
 
 #[cfg(not(target_env = "msvc"))]
@@ -186,6 +187,7 @@ struct AppState {
     slot_mapping_cache_maxage: u32,
     transactions_cache_maxage: u32,
     connection_pool: r2d2::Pool<ConnectionManager<PgConnection>>,
+    transactions_result_max_size: u32,
     chains: HashMap<u64, Chain>,
 }
 
@@ -462,6 +464,8 @@ fn map_avail_send_to_transaction_result(send: AvailSend) -> TransactionData {
     }
 }
 
+/// transactions returns bridge transactions that are matched with a provided query params
+/// limits the output to the most recent (500 default) transaction.
 #[inline(always)]
 async fn transactions(
     Query(address_query): Query<TransactionQueryParams>,
@@ -485,63 +489,99 @@ async fn transactions(
     // Initialize the result variables
     let mut transaction_results: TransactionResult = TransactionResult::default();
 
-    // Return the combined results
+    let mut eth_send_query = ethereum_sends.into_boxed();
     if let Some(eth_address) = address_query.eth_address {
-        let ethereum_sends_results = ethereum_sends
-            .select(EthereumSend::as_select())
-            .filter(schema::ethereum_sends::depositor_address.eq(format!("{:?}", eth_address)))
-            .order_by(schema::ethereum_sends::source_timestamp.desc())
-            .limit(500)
-            .load::<EthereumSend>(&mut conn);
-
-        transaction_results.eth_send = ethereum_sends_results
-            .map_err(|e| {
-                tracing::error!("Cannot get ethereum send transactions:: {e:#}");
-                ErrorResponse::with_status_and_headers(
-                    e.into(),
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    &[("Cache-Control", "public, max-age=60, must-revalidate")],
-                )
-            })?
-            .into_iter()
-            .map(map_ethereum_send_to_transaction_result)
-            .collect();
+        eth_send_query = eth_send_query
+            .filter(schema::ethereum_sends::depositor_address.eq(format!("{:?}", eth_address)));
     }
 
     if let Some(avail_address) = address_query.avail_address {
-        let avail_sends_results = avail_sends
-            .select(AvailSend::as_select())
-            .filter(schema::avail_sends::depositor_address.eq(format!("{:?}", avail_address)))
-            .order_by(schema::avail_sends::source_timestamp.desc())
-            .limit(500)
-            .load::<AvailSend>(&mut conn);
+        eth_send_query = eth_send_query
+            .or_filter(schema::ethereum_sends::receiver_address.eq(format!("{:?}", avail_address)));
+    }
 
-        transaction_results.avail_send = avail_sends_results
-            .map_err(|e| {
-                tracing::error!("Cannot get avail send transactions: {e:#}");
-                ErrorResponse::with_status_and_headers(
-                    e.into(),
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    &[("Cache-Control", "public, max-age=60, must-revalidate")],
-                )
-            })?
-            .into_iter()
-            .map(map_avail_send_to_transaction_result)
-            .collect();
+    // Return the combined results
+    let ethereum_sends_results = eth_send_query
+        .select(EthereumSend::as_select())
+        .order_by(schema::ethereum_sends::source_timestamp.desc())
+        .limit(state.transactions_result_max_size.into())
+        .load::<EthereumSend>(&mut conn);
+
+    match ethereum_sends_results {
+        Ok(transaction) => {
+            transaction_results.eth_send = transaction
+                .into_iter()
+                .map(map_ethereum_send_to_transaction_result)
+                .collect()
+        }
+        Err(e) => {
+            tracing::error!("Cannot get ethereum send transactions: {:?}", e);
+            return Ok((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                [("Cache-Control", "max-age=60, must-revalidate".to_string())],
+                Json(json!({ "error": e.to_string()})),
+            ));
+        }
+    }
+
+    let mut avail_send_query = avail_sends.into_boxed();
+    if let Some(avail_address) = address_query.avail_address {
+        avail_send_query = avail_send_query
+            .filter(schema::avail_sends::depositor_address.eq(format!("{:?}", avail_address)));
+    }
+
+    if let Some(eth_address) = address_query.eth_address {
+        avail_send_query = avail_send_query
+            .or_filter(schema::avail_sends::receiver_address.eq(format!("{:?}", eth_address)));
+    }
+
+    let avail_sends_results = avail_send_query
+        .select(AvailSend::as_select())
+        .order_by(schema::avail_sends::source_timestamp.desc())
+        .limit(state.transactions_result_max_size.into())
+        .load::<AvailSend>(&mut conn);
+
+    match avail_sends_results {
+        Ok(transaction) => {
+            transaction_results.avail_send = transaction
+                .into_iter()
+                .map(map_avail_send_to_transaction_result)
+                .collect()
+        }
+        Err(e) => {
+            tracing::error!("Cannot get avail send transactions: {:?}", e);
+            return Ok((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                [("Cache-Control", "max-age=60, must-revalidate".to_string())],
+                Json(json!({ "error": e.to_string()})),
+            ));
+        }
+    }
+
+    let avail_send_count = transaction_results.avail_send.len() as u32;
+    let eth_send_count = transaction_results.eth_send.len() as u32;
+
+    // if number of results is the same as the configure value
+    if avail_send_count >= state.transactions_result_max_size
+        || eth_send_count >= state.transactions_result_max_size
+    {
+        warn!(
+            "Transaction result has more items that the configured {}",
+            state.transactions_result_max_size
+        );
     }
 
     Ok((
-        StatusCode::OK,
-        [(
-            "Cache-Control",
-            format!(
-                "public, max-age={}, immutable",
-                state.transactions_cache_maxage
-            ),
-        )],
-        Json(json!(transaction_results)),
+           StatusCode::OK,
+           [(
+               "Cache-Control",
+               format!(
+                   "public, max-age={}, must-revalidate",
+                   state.transactions_cache_maxage),
+           )],
+           Json(json!(transaction_results))
     )
-        .into_response())
+               .into_response())
 }
 
 #[inline(always)]
@@ -689,7 +729,7 @@ async fn get_avl_proof(
             message_id_query.to_be_bytes_vec(),
             U256::from(1).to_be_bytes_vec(),
         ]
-        .concat(),
+            .concat(),
     );
     let result = hasher.finalize();
     let proof: Result<AccountStorageProofResponse, ClientError> = state
@@ -1039,13 +1079,13 @@ async fn get_proof(
         )
     })? {
         Ok(SuccinctAPIResponse {
-            data: Some(data), ..
-        }) => data,
+               data: Some(data), ..
+           }) => data,
         Ok(SuccinctAPIResponse {
-            success: Some(false),
-            error: Some(data),
-            ..
-        }) => {
+               success: Some(false),
+               error: Some(data),
+               ..
+           }) => {
             if data.contains("not in the range of blocks") {
                 tracing::warn!(
                     "Succinct VectorX contract not updated yet! Response: {}",
@@ -1257,6 +1297,12 @@ async fn main() {
             })
             .unwrap_or(60),
         connection_pool,
+        transactions_result_max_size: env::var("TRANSACTIONS_RESULT_MAX_SIZE")
+            .ok()
+            .and_then(|transactions_mapping_response| {
+                transactions_mapping_response.parse::<u32>().ok()
+            })
+            .unwrap_or(500),
         chains,
     });
 
@@ -1383,8 +1429,8 @@ async fn track_slot_avail_task(state: Arc<AppState>) -> Result<()> {
                     "{}/eth/v2/beacon/blocks/{}",
                     state.beaconchain_base_url, slot
                 ))
-                .await
-                .context("Cannot get beacon block")?;
+                    .await
+                    .context("Cannot get beacon block")?;
                 let root = response
                     .json::<Root>()
                     .await
