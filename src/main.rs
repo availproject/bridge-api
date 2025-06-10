@@ -516,11 +516,11 @@ async fn transactions(
         }
         Err(e) => {
             tracing::error!("Cannot get ethereum send transactions: {:?}", e);
-            return (
+            return Ok((
                 StatusCode::INTERNAL_SERVER_ERROR,
                 [("Cache-Control", "max-age=60, must-revalidate".to_string())],
                 Json(json!({ "error": e.to_string()})),
-            );
+            ));
         }
     }
 
@@ -550,11 +550,11 @@ async fn transactions(
         }
         Err(e) => {
             tracing::error!("Cannot get avail send transactions: {:?}", e);
-            return (
+            return Ok((
                 StatusCode::INTERNAL_SERVER_ERROR,
                 [("Cache-Control", "max-age=60, must-revalidate".to_string())],
                 Json(json!({ "error": e.to_string()})),
-            );
+            ));
         }
     }
 
@@ -572,17 +572,16 @@ async fn transactions(
     }
 
     Ok((
-        StatusCode::OK,
-        [(
-            "Cache-Control",
-            format!(
-                "public, max-age={}, must-revalidate",
-                state.transactions_cache_maxage
-            ),
-        )],
-        Json(json!(transaction_results)),
+           StatusCode::OK,
+           [(
+               "Cache-Control",
+               format!(
+                   "public, max-age={}, must-revalidate",
+                   state.transactions_cache_maxage),
+           )],
+           Json(json!(transaction_results))
     )
-        .into_response())
+               .into_response())
 }
 
 #[inline(always)]
@@ -730,7 +729,7 @@ async fn get_avl_proof(
             message_id_query.to_be_bytes_vec(),
             U256::from(1).to_be_bytes_vec(),
         ]
-        .concat(),
+            .concat(),
     );
     let result = hasher.finalize();
     let proof: Result<AccountStorageProofResponse, ClientError> = state
@@ -1080,13 +1079,13 @@ async fn get_proof(
         )
     })? {
         Ok(SuccinctAPIResponse {
-            data: Some(data), ..
-        }) => data,
+               data: Some(data), ..
+           }) => data,
         Ok(SuccinctAPIResponse {
-            success: Some(false),
-            error: Some(data),
-            ..
-        }) => {
+               success: Some(false),
+               error: Some(data),
+               ..
+           }) => {
             if data.contains("not in the range of blocks") {
                 tracing::warn!(
                     "Succinct VectorX contract not updated yet! Response: {}",
@@ -1430,8 +1429,8 @@ async fn track_slot_avail_task(state: Arc<AppState>) -> Result<()> {
                     "{}/eth/v2/beacon/blocks/{}",
                     state.beaconchain_base_url, slot
                 ))
-                .await
-                .context("Cannot get beacon block")?;
+                    .await
+                    .context("Cannot get beacon block")?;
                 let root = response
                     .json::<Root>()
                     .await
