@@ -576,7 +576,7 @@ async fn transactions(
         [(
             "Cache-Control",
             format!(
-                "public, max-age={}, immutable",
+                "public, max-age={}, must-revalidate",
                 state.transactions_cache_maxage
             ),
         )],
