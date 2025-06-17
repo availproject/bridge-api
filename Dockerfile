@@ -7,7 +7,7 @@ RUN apt update && apt install -y make libssl-dev pkg-config libpq-dev \
     && cargo build --profile $BUILD_PROFILE --locked \
     && cp /build/target/$BUILD_PROFILE/bridge-api /build/bridge-api
 
-FROM ubuntu:24.04 as run
+FROM ubuntu:22.04 AS run
 WORKDIR /app
 
 COPY --from=builder /build/bridge-api /usr/local/bin
