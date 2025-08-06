@@ -582,16 +582,17 @@ async fn get_eth_proof(
     let (data_proof, succinct_response) = join!(data_proof_response_fut, succinct_response_fut);
     let data_proof_res: KateQueryDataProofResponse = data_proof
         .map_err(|e| {
-            tracing::error!("❌ : {e:#}");
+            tracing::error!("❌ Failed to fetch the kate query data. Error: {e:#}");
             ErrorResponse::with_status_and_headers(
-                e.into(),
+                anyhow::anyhow!("Something went wrong."),
                 StatusCode::INTERNAL_SERVER_ERROR,
                 &[("Cache-Control", "public, max-age=60, must-revalidate")],
             )
         })?
         .map_err(|e| {
+            tracing::error!("❌ Failed to get the kate query data. Error: {e:#}");
             ErrorResponse::with_status_and_headers(
-                e.into(),
+                anyhow::anyhow!("Something went wrong."),
                 StatusCode::BAD_REQUEST,
                 &[("Cache-Control", "public, max-age=60, must-revalidate")],
             )
@@ -599,16 +600,17 @@ async fn get_eth_proof(
 
     let succinct_data = succinct_response
         .map_err(|e| {
-            tracing::error!("❌ : {e:#}");
+            tracing::error!("❌ Failed to get the merkle proof data. Error: {e:#}");
             ErrorResponse::with_status_and_headers(
-                e.into(),
+                anyhow::anyhow!("Something went wrong."),
                 StatusCode::INTERNAL_SERVER_ERROR,
                 &[("Cache-Control", "public, max-age=60, must-revalidate")],
             )
         })?
         .map_err(|e| {
+            tracing::error!("❌ Merkle proof api response was unsuccessful. Error: {e:#}");
             ErrorResponse::with_status_and_headers(
-                e.into(),
+                anyhow::anyhow!("Something went wrong."),
                 StatusCode::INTERNAL_SERVER_ERROR,
                 &[("Cache-Control", "public, max-age=60, must-revalidate")],
             )
