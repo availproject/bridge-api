@@ -1265,22 +1265,17 @@ async fn main() {
     let app = Router::new()
         .route("/", get(alive))
         .route("/versions", get(versions))
-        .route("/v1/info", get(info))
         .route("/info", get(info))
+        .route("/v1/info", get(info))
         .route("/v1/eth/proof/{block_hash}", get(get_eth_proof))
-        .route("/eth/proof/{block_hash}", get(get_eth_proof))
         .route("/v1/eth/head", get(get_eth_head))
-        .route("/eth/head", get(get_eth_head_legacy))
         .route("/v1/avl/head", get(get_avl_head))
-        .route("/avl/head", get(get_avl_head))
         .route(
             "/v1/avl/proof/{block_hash}/{message_id}",
             get(get_avl_proof),
         )
         .route("/v1/transactions", get(transactions))
         .route("/transactions", get(transactions))
-        .route("/avl/proof/{block_hash}/{message_id}", get(get_avl_proof))
-        .route("/beacon/slot/{slot_number}", get(get_beacon_slot))
         .route("/v1/head/{chain_id}", get(get_head))
         .route("/v1/proof/{chain_id}", get(get_proof))
         .layer(TraceLayer::new_for_http())
