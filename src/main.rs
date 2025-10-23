@@ -1,14 +1,13 @@
 mod models;
 mod schema;
 
-use crate::models::{AvailSend, EthereumSend, StatusEnum};
+use crate::models::*;
+
 use crate::schema::avail_sends::dsl::avail_sends;
 use crate::schema::ethereum_sends::dsl::ethereum_sends;
 use alloy::primitives::{Address, B256, U256, hex};
 use alloy::providers::ProviderBuilder;
-use alloy::sol;
 use anyhow::{Context, Result, anyhow};
-use avail_core::data_proof::AddressedMessage;
 use axum::body::{Body, to_bytes};
 use axum::response::Response;
 use axum::{
@@ -25,7 +24,7 @@ use diesel::{
     ExpressionMethods, PgConnection, QueryDsl, RunQueryDsl, SelectableHelper, r2d2,
     r2d2::ConnectionManager,
 };
-use http::{HeaderMap, HeaderName, HeaderValue, Method};
+use http::Method;
 use jsonrpsee::{
     core::ClientError,
     core::client::ClientT,
@@ -34,7 +33,7 @@ use jsonrpsee::{
 };
 use lazy_static::lazy_static;
 use reqwest::Client;
-use serde::{Deserialize, Deserializer, Serialize};
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use serde_with::serde_as;
 use sha3::{Digest, Keccak256};
@@ -58,309 +57,28 @@ use tracing_subscriber::prelude::*;
 #[global_allocator]
 static GLOBAL: Jemalloc = Jemalloc;
 
-sol!(
-    #[allow(missing_docs)]
-    #[sol(rpc)]
-    SP1Vector,
-    "src/abi/SP1Vector.json"
-);
-
-#[derive(Debug, Deserialize)]
-struct Root {
-    data: Data,
-}
-
-#[derive(Debug, Deserialize)]
-struct Data {
-    message: Message,
-}
-
-#[derive(Debug, Deserialize)]
-struct Message {
-    slot: String,
-    body: MessageBody,
-}
-
-#[derive(Debug, Deserialize)]
-struct MessageBody {
-    execution_payload: ExecutionPayload,
-}
-
-#[derive(Debug, Deserialize)]
-struct ExecutionPayload {
-    block_number: String,
-    block_hash: String,
-}
-
-struct ErrorResponse {
-    pub error: anyhow::Error,
-    pub headers_keypairs: Vec<(String, String)>,
-    pub status_code: Option<StatusCode>,
-}
-
-impl ErrorResponse {
-    pub fn new(error: anyhow::Error) -> Self {
-        Self {
-            error,
-            headers_keypairs: vec![],
-            status_code: None,
-        }
-    }
-    pub fn with_status(error: anyhow::Error, status_code: StatusCode) -> Self {
-        Self {
-            error,
-            headers_keypairs: vec![],
-            status_code: Some(status_code),
-        }
-    }
-
-    pub fn with_status_and_headers(
-        error: anyhow::Error,
-        status_code: StatusCode,
-        headers: &[(&str, &str)],
-    ) -> Self {
-        let h = headers
-            .iter()
-            .map(|(k, v)| (k.to_string(), v.to_string()))
-            .collect::<Vec<_>>();
-        Self {
-            error,
-            headers_keypairs: h,
-            status_code: Some(status_code),
-        }
-    }
-}
-
-// Tell axum how to convert `AppError` into a response.
-impl IntoResponse for ErrorResponse {
-    fn into_response(self) -> Response {
-        let status = self
-            .status_code
-            .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
-        let mut headermap = HeaderMap::new();
-        for (k, v) in self.headers_keypairs {
-            headermap.insert(
-                HeaderName::try_from(k).unwrap(),
-                HeaderValue::try_from(v).unwrap(),
-            );
-        }
-        let json_resp = Json(json!({"error" : format!("{:#}", self.error)}));
-
-        (status, headermap, json_resp).into_response()
-    }
-}
-
-// This enables using `?` on functions that return `Result<_, anyhow::Error>` to turn them into
-// `Result<_, AppError>`. That way you don't need to do that manually.
-impl<E> From<E> for ErrorResponse
-where
-    E: Into<anyhow::Error>,
-{
-    fn from(err: E) -> Self {
-        Self {
-            error: err.into(),
-            headers_keypairs: vec![],
-            status_code: None,
-        }
-    }
-}
-
 #[derive(Debug)]
-struct AppState {
-    avail_client: HttpClient,
-    ethereum_client: HttpClient,
-    request_client: Client,
-    succinct_base_url: String,
-    beaconchain_base_url: String,
-    avail_chain_name: String,
-    contract_chain_id: String,
-    contract_address: String,
-    bridge_contract_address: String,
-    eth_head_cache_maxage: u16,
-    avl_head_cache_maxage: u16,
-    head_cache_maxage: u16,
-    avl_proof_cache_maxage: u32,
-    eth_proof_cache_maxage: u32,
-    proof_cache_maxage: u32,
-    eth_proof_failure_cache_maxage: u32,
-    slot_mapping_cache_maxage: u32,
-    transactions_cache_maxage: u32,
-    connection_pool: r2d2::Pool<ConnectionManager<PgConnection>>,
-    chains: HashMap<u64, Chain>,
-}
-
-#[derive(Debug)]
-struct Chain {
-    rpc_url: String,
-    contract_address: Address,
-}
-
-#[derive(Deserialize)]
-struct IndexStruct {
-    index: u32,
-}
-
-#[derive(Deserialize)]
-struct ProofQueryStruct {
-    index: u32,
-    block_hash: B256,
-}
-
-#[derive(Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct KateQueryDataProofResponse {
-    data_proof: DataProof,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    message: Option<AddressedMessage>,
-}
-
-#[derive(Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct DataProof {
-    roots: Roots,
-    proof: Vec<B256>,
-    leaf_index: u32,
-    leaf: B256,
-}
-
-#[derive(Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct Roots {
-    data_root: B256,
-    blob_root: B256,
-    bridge_root: B256,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct AccountStorageProofResponse {
-    account_proof: Vec<String>,
-    storage_proof: Vec<StorageProof>,
-}
-
-#[derive(Deserialize)]
-struct StorageProof {
-    proof: Vec<String>,
-}
-
-#[derive(Deserialize)]
-struct SuccinctAPIResponse {
-    data: Option<SuccinctAPIData>,
-    error: Option<String>,
-    success: Option<bool>,
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct SlotMappingResponse {
-    block_hash: String,
-    block_number: String,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct SuccinctAPIData {
-    range_hash: B256,
-    data_commitment: B256,
-    merkle_branch: Vec<B256>,
-    index: u16,
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct AggregatedResponse {
-    data_root_proof: Vec<B256>,
-    leaf_proof: Vec<B256>,
-    range_hash: B256,
-    data_root_index: u16,
-    leaf: B256,
-    leaf_index: u32,
-    data_root: B256,
-    blob_root: B256,
-    bridge_root: B256,
-    data_root_commitment: B256,
-    block_hash: B256,
-    message: Option<AddressedMessage>,
-}
-
-impl AggregatedResponse {
-    pub fn new(
-        range_data: SuccinctAPIData,
-        data_proof_res: KateQueryDataProofResponse,
-        hash: B256,
-    ) -> Self {
-        AggregatedResponse {
-            data_root_proof: range_data.merkle_branch,
-            leaf_proof: data_proof_res.data_proof.proof,
-            range_hash: range_data.range_hash,
-            data_root_index: range_data.index,
-            leaf: data_proof_res.data_proof.leaf,
-            leaf_index: data_proof_res.data_proof.leaf_index,
-            data_root: data_proof_res.data_proof.roots.data_root,
-            blob_root: data_proof_res.data_proof.roots.blob_root,
-            bridge_root: data_proof_res.data_proof.roots.bridge_root,
-            data_root_commitment: range_data.data_commitment,
-            block_hash: hash,
-            message: data_proof_res.message,
-        }
-    }
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct EthProofResponse {
-    account_proof: Vec<String>,
-    storage_proof: Vec<String>,
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct HeadResponseV2 {
-    pub slot: u64,
-    pub block_number: u64,
-    pub block_hash: B256,
-    pub timestamp: u64,
-    pub timestamp_diff: u64,
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct HeadResponseLegacy {
-    pub slot: u64,
-    pub timestamp: u64,
-    pub timestamp_diff: u64,
-}
-
-#[derive(Serialize, Deserialize)]
-struct ChainHeadResponse {
-    pub head: u32,
-}
-
-#[derive(Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct RangeBlocks {
-    start: u32,
-    end: u32,
-}
-
-#[derive(Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct RangeBlocksAPIResponse {
-    data: RangeBlocks,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct HeaderBlockNumber {
-    #[serde(deserialize_with = "hex_to_u32")]
-    pub number: u32,
-}
-
-fn hex_to_u32<'de, D>(deserializer: D) -> Result<u32, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    let s: &str = Deserialize::deserialize(deserializer)?;
-    u32::from_str_radix(s.trim_start_matches("0x"), 16).map_err(serde::de::Error::custom)
+pub struct AppState {
+    pub avail_client: HttpClient,
+    pub ethereum_client: HttpClient,
+    pub request_client: Client,
+    pub merkle_proof_service_base_url: String,
+    pub beaconchain_base_url: String,
+    pub avail_chain_name: String,
+    pub contract_chain_id: String,
+    pub contract_address: String,
+    pub bridge_contract_address: String,
+    pub eth_head_cache_maxage: u16,
+    pub avl_head_cache_maxage: u16,
+    pub head_cache_maxage: u16,
+    pub avl_proof_cache_maxage: u32,
+    pub eth_proof_cache_maxage: u32,
+    pub proof_cache_maxage: u32,
+    pub eth_proof_failure_cache_maxage: u32,
+    pub slot_mapping_cache_maxage: u32,
+    pub transactions_cache_maxage: u32,
+    pub connection_pool: r2d2::Pool<ConnectionManager<PgConnection>>,
+    pub chains: HashMap<u64, Chain>,
 }
 
 async fn alive() -> Result<Json<Value>, StatusCode> {
@@ -565,21 +283,22 @@ async fn get_eth_proof(
     let eth_proof_failure_cache_maxage = state.eth_proof_failure_cache_maxage;
     let url = format!(
         "{}?chainName={}&contractChainId={}&contractAddress={}&blockHash={}",
-        state.succinct_base_url,
+        state.merkle_proof_service_base_url,
         state.avail_chain_name,
         state.contract_chain_id,
         state.contract_address,
         block_hash
     );
 
-    let succinct_response_fut = tokio::spawn(async move {
-        let succinct_response = state.request_client.get(url).send().await;
-        match succinct_response {
-            Ok(resp) => resp.json::<SuccinctAPIResponse>().await,
+    let mekrle_proof_response_fut = tokio::spawn(async move {
+        let merkle_proof_response = state.request_client.get(url).send().await;
+        match merkle_proof_response {
+            Ok(resp) => resp.json::<MekrleProofAPIResponse>().await,
             Err(err) => Err(err),
         }
     });
-    let (data_proof, succinct_response) = join!(data_proof_response_fut, succinct_response_fut);
+    let (data_proof, merkle_proof_response) =
+        join!(data_proof_response_fut, mekrle_proof_response_fut);
     let data_proof_res: KateQueryDataProofResponse = data_proof
         .map_err(|e| {
             tracing::error!("❌ Failed to fetch the kate query data. Error: {e:#}");
@@ -598,7 +317,7 @@ async fn get_eth_proof(
             )
         })?;
 
-    let succinct_data = succinct_response
+    let merkle_proof_data = merkle_proof_response
         .map_err(|e| {
             tracing::error!("❌ Failed to get the merkle proof data. Error: {e:#}");
             ErrorResponse::with_status_and_headers(
@@ -615,25 +334,22 @@ async fn get_eth_proof(
                 &[("Cache-Control", "public, max-age=60, must-revalidate")],
             )
         })?;
-    let succinct_data = match succinct_data {
-        SuccinctAPIResponse {
+    let merkle_data = match merkle_proof_data {
+        MekrleProofAPIResponse {
             data: Some(data), ..
         } => data,
-        SuccinctAPIResponse {
+        MekrleProofAPIResponse {
             success: Some(false),
             error: Some(data),
             ..
         } => {
             if data.contains("not in the range of blocks") {
                 tracing::warn!(
-                    "⏳ Succinct VectorX contract not updated yet! Response: {}",
+                    "⏳ Merkle proof VectorX contract not updated yet! Response: {}",
                     data
                 );
             } else {
-                tracing::error!(
-                    "❌ Succinct API returned unsuccessfully. Response: {}",
-                    data
-                );
+                tracing::error!("❌ Merkle API returned unsuccessfully. Response: {}", data);
             }
 
             return Err(ErrorResponse::with_status_and_headers(
@@ -647,9 +363,9 @@ async fn get_eth_proof(
         }
 
         _ => {
-            tracing::error!("❌ Succinct API returned no data");
+            tracing::error!("❌ Merkle proof API returned no data");
             return Err(ErrorResponse::with_status_and_headers(
-                anyhow!("Succinct API returned no data"),
+                anyhow!("Merkle proof API returned no data"),
                 StatusCode::NOT_FOUND,
                 &[("Cache-Control", "public, max-age=60, must-revalidate")],
             ));
@@ -663,16 +379,16 @@ async fn get_eth_proof(
             format!("public, max-age={}, immutable", eth_proof_cache_maxage),
         )],
         Json(json!(AggregatedResponse {
-            data_root_proof: succinct_data.merkle_branch,
+            data_root_proof: merkle_data.merkle_branch,
             leaf_proof: data_proof_res.data_proof.proof,
-            range_hash: succinct_data.range_hash,
-            data_root_index: succinct_data.index,
+            range_hash: merkle_data.range_hash,
+            data_root_index: merkle_data.index,
             leaf: data_proof_res.data_proof.leaf,
             leaf_index: data_proof_res.data_proof.leaf_index,
             data_root: data_proof_res.data_proof.roots.data_root,
             blob_root: data_proof_res.data_proof.roots.blob_root,
             bridge_root: data_proof_res.data_proof.roots.bridge_root,
-            data_root_commitment: succinct_data.data_commitment,
+            data_root_commitment: merkle_data.data_commitment,
             block_hash,
             message: data_proof_res.message
         })),
@@ -739,59 +455,6 @@ async fn get_avl_proof(
         .into_response())
 }
 
-/// Creates a request to the beaconcha service for mapping slot to the block number.
-#[inline(always)]
-async fn get_beacon_slot(
-    Path(slot): Path<U256>,
-    State(state): State<Arc<AppState>>,
-) -> Result<impl IntoResponse, ErrorResponse> {
-    let resp = state
-        .request_client
-        .get(format!(
-            "{}/eth/v2/beacon/blocks/{}",
-            state.beaconchain_base_url, slot
-        ))
-        .send()
-        .await
-        .map_err(|e| {
-            tracing::error!("❌ Cannot get beacon API data: {e:#}");
-            ErrorResponse::with_status_and_headers(
-                e.into(),
-                StatusCode::INTERNAL_SERVER_ERROR,
-                &[("Cache-Control", "public, max-age=60, must-revalidate")],
-            )
-        })?;
-
-    let response_data = resp.json::<Root>().await.map_err(|e| {
-        tracing::error!("❌ Cannot get beacon API response data: {e:#}");
-        ErrorResponse::with_status_and_headers(
-            e.into(),
-            StatusCode::INTERNAL_SERVER_ERROR,
-            &[("Cache-Control", "public, max-age=60, must-revalidate")],
-        )
-    })?;
-    Ok((
-        StatusCode::OK,
-        [(
-            "Cache-Control",
-            format!(
-                "public, max-age={}, immutable",
-                state.slot_mapping_cache_maxage
-            ),
-        )],
-        Json(json!(SlotMappingResponse {
-            block_number: response_data
-                .data
-                .message
-                .body
-                .execution_payload
-                .block_number,
-            block_hash: response_data.data.message.body.execution_payload.block_hash
-        })),
-    )
-        .into_response())
-}
-
 /// get_eth_head returns Ethereum head with the latest slot/block that is stored and a time.
 #[inline(always)]
 async fn get_eth_head(
@@ -827,39 +490,6 @@ async fn get_eth_head(
         .into_response())
 }
 
-/// get_eth_head returns Ethereum head with the latest slot/block that is stored and a time.
-#[inline(always)]
-async fn get_eth_head_legacy(
-    State(state): State<Arc<AppState>>,
-) -> Result<impl IntoResponse, ErrorResponse> {
-    let slot_block_head = SLOT_BLOCK_HEAD.read().await;
-    let (slot, _block, _hash, timestamp) = slot_block_head.as_ref().ok_or_else(|| {
-        ErrorResponse::with_status_and_headers(
-            anyhow!("Not found"),
-            StatusCode::INTERNAL_SERVER_ERROR,
-            &[("Cache-Control", "public, max-age=60, must-revalidate")],
-        )
-    })?;
-
-    let now = Utc::now().timestamp() as u64;
-    Ok((
-        StatusCode::OK,
-        [(
-            "Cache-Control",
-            format!(
-                "public, max-age={}, must-revalidate",
-                state.eth_head_cache_maxage
-            ),
-        )],
-        Json(json!(HeadResponseLegacy {
-            slot: *slot,
-            timestamp: *timestamp,
-            timestamp_diff: now - *timestamp
-        })),
-    )
-        .into_response())
-}
-
 /// get_avl_head returns start and end blocks which the contract has commitments
 #[inline(always)]
 async fn get_avl_head(
@@ -867,7 +497,10 @@ async fn get_avl_head(
 ) -> Result<impl IntoResponse, ErrorResponse> {
     let url = format!(
         "{}/{}/?contractChainId={}&contractAddress={}",
-        state.succinct_base_url, "range", state.contract_chain_id, state.contract_address
+        state.merkle_proof_service_base_url,
+        "range",
+        state.contract_chain_id,
+        state.contract_address
     );
     let response = state.request_client.get(url).send().await.map_err(|e| {
         tracing::error!("❌ Cannot parse range blocks: {e:#}");
@@ -1040,21 +673,21 @@ async fn get_proof(
             &[("Cache-Control", "max-age=60, must-revalidate")],
         )
     })? {
-        Ok(SuccinctAPIResponse {
+        Ok(MekrleProofAPIResponse {
             data: Some(data), ..
         }) => data,
-        Ok(SuccinctAPIResponse {
+        Ok(MekrleProofAPIResponse {
             success: Some(false),
             error: Some(data),
             ..
         }) => {
             if data.contains("not in the range of blocks") {
-                tracing::warn!(
-                    "Succinct VectorX contract not updated yet! Response: {}",
+                tracing::warn!("VectorX contract not updated yet! Response: {}", data);
+            } else {
+                tracing::error!(
+                    "Merkle proof API returned unsuccessfully. Response: {}",
                     data
                 );
-            } else {
-                tracing::error!("Succinct API returned unsuccessfully. Response: {}", data);
             }
             return Err(ErrorResponse::with_status_and_headers(
                 anyhow!("error: {data}"),
@@ -1063,7 +696,7 @@ async fn get_proof(
             ));
         }
         Err(err) => {
-            tracing::error!("Cannot get succinct api response {:?}", err);
+            tracing::error!("Cannot get merkle proof api response {:?}", err);
             return Err(ErrorResponse::with_status_and_headers(
                 anyhow!("error: {err}"),
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -1071,9 +704,9 @@ async fn get_proof(
             ));
         }
         _ => {
-            tracing::error!("Succinct API returned no data");
+            tracing::error!("Merkle proof API returned no data");
             return Err(ErrorResponse::with_status_and_headers(
-                anyhow!("Succinct API returned no data"),
+                anyhow!("Merkle proof API returned no data"),
                 StatusCode::INTERNAL_SERVER_ERROR,
                 &[("Cache-Control", "max-age=60, must-revalidate")],
             ));
@@ -1113,10 +746,10 @@ fn spawn_kate_proof(
 fn spawn_merkle_proof_range_fetch(
     state: Arc<AppState>,
     block_hash: B256,
-) -> JoinHandle<Result<SuccinctAPIResponse, reqwest::Error>> {
+) -> JoinHandle<Result<MekrleProofAPIResponse, reqwest::Error>> {
     let url = format!(
         "{}?chainName={}&contractChainId={}&contractAddress={}&blockHash={}",
-        state.succinct_base_url,
+        state.merkle_proof_service_base_url,
         state.avail_chain_name,
         state.contract_chain_id,
         state.contract_address,
@@ -1125,7 +758,7 @@ fn spawn_merkle_proof_range_fetch(
     tokio::spawn(async move {
         let res = state.request_client.get(url).send().await;
         match res {
-            Ok(resp) => resp.json::<SuccinctAPIResponse>().await,
+            Ok(resp) => resp.json::<MekrleProofAPIResponse>().await,
             Err(e) => Err(e),
         }
     })
@@ -1210,7 +843,7 @@ async fn main() {
             )
             .unwrap(),
         request_client: Client::builder().brotli(true).build().unwrap(),
-        succinct_base_url: env::var("SUCCINCT_URL")
+        merkle_proof_service_base_url: env::var("MERKLE_PROOF_SERVICE_URL")
             .unwrap_or("https://beaconapi.succinct.xyz/api/integrations/vectorx".to_owned()),
         beaconchain_base_url: env::var("BEACONCHAIN_URL")
             .unwrap_or("https://sepolia.beaconcha.in/api/v1/slot".to_owned()),

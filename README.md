@@ -1,6 +1,6 @@
 # Bridge API
 
-The bridge API is a REST API for fetching proofs from Avail's Kate RPC and Succinct API to submit on Ethereum or
+The bridge API is a REST API for fetching proofs from Avail's Kate RPC and Merkle proof service API to submit on Ethereum or
 any off-chain proof verification.
 
 ## Deploying the bridge API
