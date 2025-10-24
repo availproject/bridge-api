@@ -18,6 +18,7 @@ use jsonrpsee::core::Serialize;
 use serde::{Deserialize, Deserializer};
 use serde_json::json;
 use serde_with::serde_as;
+use sp_core::{H160, H256};
 use std::io::Write;
 
 sol!(
@@ -379,4 +380,84 @@ pub struct EthereumSend {
     pub depositor_address: String,
     pub receiver_address: String,
     pub amount: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TransactionQueryParams {
+    pub eth_address: Option<H160>,
+    pub avail_address: Option<H256>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde_as]
+#[serde(rename_all = "camelCase")]
+pub struct TransactionData {
+    pub message_id: i64,
+    pub status: StatusEnum,
+    pub source_transaction_hash: String,
+    pub source_block_number: i64,
+    pub source_block_hash: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_transaction_index: Option<i64>,
+    #[serde_as(as = "TimestampSeconds")]
+    pub source_timestamp: NaiveDateTime,
+    pub token_id: String,
+    pub destination_block_number: Option<i64>,
+    pub destination_block_hash: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub destination_transaction_index: Option<i64>,
+    #[serde_as(as = "Option<TimestampSeconds>")]
+    pub destination_timestamp: Option<NaiveDateTime>,
+    pub depositor_address: String,
+    pub receiver_address: String,
+    pub amount: String,
+}
+
+#[derive(Debug, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TransactionResult {
+    pub avail_send: Vec<TransactionData>,
+    pub eth_send: Vec<TransactionData>,
+}
+
+pub fn map_ethereum_send_to_transaction_result(send: EthereumSend) -> TransactionData {
+    TransactionData {
+        message_id: send.message_id,
+        status: send.status,
+        source_transaction_hash: send.source_transaction_hash,
+        source_block_number: send.source_block_number,
+        source_block_hash: send.source_block_hash,
+        source_transaction_index: None,
+        source_timestamp: send.source_timestamp,
+        token_id: send.token_id,
+        destination_block_number: send.destination_block_number,
+        destination_block_hash: send.destination_block_hash,
+        destination_transaction_index: send.destination_transaction_index,
+        destination_timestamp: send.destination_timestamp,
+        depositor_address: send.depositor_address,
+        receiver_address: send.receiver_address,
+        amount: send.amount,
+    }
+}
+
+// Function to map AvailSend to TransactionResult
+pub fn map_avail_send_to_transaction_result(send: AvailSend) -> TransactionData {
+    TransactionData {
+        message_id: send.message_id,
+        status: send.status,
+        source_transaction_hash: send.source_transaction_hash,
+        source_block_number: send.source_block_number,
+        source_block_hash: send.source_block_hash,
+        source_transaction_index: Some(send.source_transaction_index),
+        source_timestamp: send.source_timestamp,
+        token_id: send.token_id,
+        destination_block_number: send.destination_block_number,
+        destination_block_hash: send.destination_block_hash,
+        destination_transaction_index: None,
+        destination_timestamp: send.destination_timestamp,
+        depositor_address: send.depositor_address,
+        receiver_address: send.receiver_address,
+        amount: send.amount,
+    }
 }
