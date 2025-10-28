@@ -5,11 +5,13 @@ use crate::models::*;
 
 use crate::schema::avail_sends::dsl::avail_sends;
 use crate::schema::ethereum_sends::dsl::ethereum_sends;
+use alloy::consensus::transaction::TxHashable;
 use alloy::primitives::{Address, B256, U256, hex};
 use alloy::providers::ProviderBuilder;
 use anyhow::{Context, Result, anyhow};
 use axum::body::{Body, to_bytes};
 use axum::response::Response;
+use axum::routing::post;
 use axum::{
     Router,
     extract::{Json, Path, Query, State},
@@ -40,7 +42,6 @@ use sha3::{Digest, Keccak256};
 use sp_core::{Decode, H160, H256};
 use sp_io::hashing::twox_128;
 use std::collections::HashMap;
-use std::sync::Arc;
 use std::{env, process, time::Duration};
 #[cfg(not(target_env = "msvc"))]
 use tikv_jemallocator::Jemalloc;
@@ -53,6 +54,8 @@ use tower_http::{
 };
 use tracing_subscriber::prelude::*;
 
+use alloy::rpc::types::Transaction;
+use std::sync::{Arc, Mutex};
 #[cfg(not(target_env = "msvc"))]
 #[global_allocator]
 static GLOBAL: Jemalloc = Jemalloc;
@@ -83,6 +86,39 @@ pub struct AppState {
 
 async fn alive() -> Result<Json<Value>, StatusCode> {
     Ok(Json(json!({ "name": "Avail Bridge API" })))
+}
+
+#[inline(always)]
+async fn transaction(
+    State(state): State<Arc<AppState>>,
+    Path(hash): Path<B256>,
+) -> Result<impl IntoResponse, ErrorResponse> {
+
+    // fetch details of the eth transaction
+    let resp: Result<Transaction, ClientError> = state
+        .ethereum_client
+        .request("eth_getTransactionByHash", rpc_params![hash])
+        .await;
+
+    let tx: Transaction = resp.map_err(|e| {
+        tracing::error!("❌ Cannot get transaction: {e:#}");
+        if e.to_string().ends_with("status code: 429") {
+            ErrorResponse::with_status_and_headers(
+                e.into(),
+                StatusCode::TOO_MANY_REQUESTS,
+                &[("Cache-Control", "public, max-age=60, must-revalidate")],
+            )
+        } else {
+            ErrorResponse::with_status_and_headers(
+                e.into(),
+                StatusCode::INTERNAL_SERVER_ERROR,
+                &[("Cache-Control", "public, max-age=60, must-revalidate")],
+            )
+        }
+    })?;
+
+
+    Ok(Json(json!({ "transaction": tx })))
 }
 
 #[inline(always)]
@@ -818,19 +854,19 @@ async fn main() {
     let app = Router::new()
         .route("/", get(alive))
         .route("/versions", get(versions))
-        .route("/info", get(info))
         .route("/v1/info", get(info))
-        .route("/v1/eth/proof/{block_hash}", get(get_eth_proof))
-        .route("/v1/eth/head", get(get_eth_head))
-        .route("/v1/avl/head", get(get_avl_head))
+        .route("/v2/transaction/{txHash}", post(transaction))
+        .route("/v1/eth/proof/{block_hash}", get(get_eth_proof)) // get proof from avail for ethereum
+        .route("/v1/eth/head", get(get_eth_head)) // fetch head form eth contract
+        .route("/v1/avl/head", get(get_avl_head)) // fetch head form avail pallet
         .route(
             "/v1/avl/proof/{block_hash}/{message_id}",
-            get(get_avl_proof),
+            get(get_avl_proof), // get proof from ethereum for avail
         )
-        .route("/v1/transactions", get(transactions))
+        .route("/v1/transactions", get(transactions)) // fetch all transaction
         .route("/transactions", get(transactions))
-        .route("/v1/head/{chain_id}", get(get_head))
-        .route("/v1/proof/{chain_id}", get(get_proof))
+        .route("/v1/head/{chain_id}", get(get_head)) // get head based on chain
+        .route("/v1/proof/{chain_id}", get(get_proof)) // get proof for avail based on chain
         .layer(TraceLayer::new_for_http())
         .layer(CompressionLayer::new())
         .layer(
