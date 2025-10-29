@@ -29,10 +29,10 @@ http = "1.1"
 backon = { version = "1.5.2", features = ["tokio-sleep"] }
 anyhow = "1"
 lazy_static = "1.5"
-diesel = { version = "2.2", features = ["postgres", "chrono", "r2d2"] }
 serde_with = "3.11.0"
 chrono = { version = "0.4", features = ["serde"] }
-
+sqlx = { version = "0.8.6", features = ["postgres", "runtime-tokio-rustls", "macros", "chrono"] }
+#alloy-rpc-types ="1.0.27"
 [target.'cfg(not(target_env = "msvc"))'.dependencies]
 tikv-jemallocator = "0.6"
 

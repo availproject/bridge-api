@@ -1,18 +1,10 @@
-use crate::schema::sql_types::Status;
 use alloy::primitives::{Address, B256};
 use alloy::sol;
 use avail_core::data_proof::AddressedMessage;
 use axum::Json;
 use axum::response::{IntoResponse, Response};
 use chrono::NaiveDateTime;
-use diesel::pg::{Pg, PgValue};
-use diesel::serialize::{IsNull, Output};
-use diesel::{
-    deserialize::{self, FromSql},
-    expression::AsExpression,
-    serialize::ToSql,
-    *,
-};
+
 use http::{HeaderMap, HeaderName, HeaderValue, StatusCode};
 use jsonrpsee::core::Serialize;
 use serde::{Deserialize, Deserializer};
@@ -294,49 +286,46 @@ where
     u32::from_str_radix(s.trim_start_matches("0x"), 16).map_err(serde::de::Error::custom)
 }
 
-#[derive(Debug, Clone, PartialEq, FromSqlRow, AsExpression, Eq)]
-#[diesel(sql_type = Status)]
-#[derive(Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Serialize, Deserialize, sqlx::Type)]
+#[sqlx(type_name = "status")]
 pub enum StatusEnum {
+    #[sqlx(rename = "INITIALIZED")]
+    Initialized,
+    #[sqlx(rename = "IN_PROGRESS")]
     InProgress,
+    #[sqlx(rename = "CLAIM_PENDING")]
     ClaimPending,
+    #[sqlx(rename = "BRIDGED")]
     Bridged,
 }
-impl ToSql<Status, Pg> for StatusEnum {
-    fn to_sql<'b>(&'b self, out: &mut Output<'b, '_, Pg>) -> serialize::Result {
-        match *self {
-            StatusEnum::InProgress => out.write_all(b"IN_PROGRESS")?,
-            StatusEnum::ClaimPending => out.write_all(b"CLAIM_PENDING")?,
-            StatusEnum::Bridged => out.write_all(b"BRIDGED")?,
-        }
-        Ok(IsNull::No)
-    }
-}
 
-impl FromSql<Status, Pg> for StatusEnum {
-    fn from_sql(bytes: PgValue<'_>) -> deserialize::Result<Self> {
-        match bytes.as_bytes() {
-            b"IN_PROGRESS" => Ok(StatusEnum::InProgress),
-            b"CLAIM_PENDING" => Ok(StatusEnum::ClaimPending),
-            b"BRIDGED" => Ok(StatusEnum::Bridged),
-            _ => Err(format!(
-                "Unrecognized enum variant {}",
-                std::str::from_utf8(bytes.as_bytes()).unwrap()
-            )
-            .as_str()
-            .into()),
-        }
-    }
-}
+// impl ToSql<Status, Pg> for StatusEnum {
+//     fn to_sql<'b>(&'b self, out: &mut Output<'b, '_, Pg>) -> serialize::Result {
+//         match *self {
+//             StatusEnum::InProgress => out.write_all(b"IN_PROGRESS")?,
+//             StatusEnum::ClaimPending => out.write_all(b"CLAIM_PENDING")?,
+//             StatusEnum::Bridged => out.write_all(b"BRIDGED")?,
+//         }
+//         Ok(IsNull::No)
+//     }
+// }
+//
+// impl FromSql<Status, Pg> for StatusEnum {
+//     fn from_sql(bytes: PgValue<'_>) -> deserialize::Result<Self> {
+//         match bytes.as_bytes() {
+//             b"IN_PROGRESS" => Ok(StatusEnum::InProgress),
+//             b"CLAIM_PENDING" => Ok(StatusEnum::ClaimPending),
+//             b"BRIDGED" => Ok(StatusEnum::Bridged),
+//             _ => Err(format!(
+//                 "Unrecognized enum variant {}",
+//                 std::str::from_utf8(bytes.as_bytes()).unwrap()
+//             )
+//             .as_str()
+//             .into()),
+//         }
+//     }
+// }
 
-#[derive(Queryable, Selectable, Insertable, Identifiable, Serialize)]
-#[serde(rename_all = "camelCase")]
-#[diesel(table_name = crate::schema::avail_sends)]
-#[diesel(primary_key(message_id))]
-#[diesel(check_for_backend(diesel::pg::Pg))]
-#[derive(Clone, Debug)]
-#[serde_as]
 pub struct AvailSend {
     pub message_id: i64,
     pub status: StatusEnum,
@@ -344,38 +333,27 @@ pub struct AvailSend {
     pub source_block_number: i64,
     pub source_block_hash: String,
     pub source_transaction_index: i64,
-    #[serde_as(as = "TimestampSeconds")]
     pub source_timestamp: NaiveDateTime,
     pub token_id: String,
     pub destination_block_number: Option<i64>,
     pub destination_block_hash: Option<String>,
-    #[serde_as(as = "Option<TimestampSeconds>")]
     pub destination_timestamp: Option<NaiveDateTime>,
     pub depositor_address: String,
     pub receiver_address: String,
     pub amount: String,
 }
 
-#[derive(Queryable, Selectable, Insertable, Identifiable, Serialize)]
-#[serde(rename_all = "camelCase")]
-#[diesel(table_name = crate::schema::ethereum_sends)]
-#[diesel(primary_key(message_id))]
-#[diesel(check_for_backend(diesel::pg::Pg))]
-#[derive(Clone, Debug)]
-#[serde_as]
 pub struct EthereumSend {
     pub message_id: i64,
     pub status: StatusEnum,
     pub source_transaction_hash: String,
     pub source_block_number: i64,
     pub source_block_hash: String,
-    #[serde_as(as = "TimestampSeconds")]
     pub source_timestamp: NaiveDateTime,
     pub token_id: String,
     pub destination_block_number: Option<i64>,
     pub destination_block_hash: Option<String>,
     pub destination_transaction_index: Option<i64>,
-    #[serde_as(as = "Option<TimestampSeconds>")]
     pub destination_timestamp: Option<NaiveDateTime>,
     pub depositor_address: String,
     pub receiver_address: String,
@@ -400,14 +378,12 @@ pub struct TransactionData {
     pub source_block_hash: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub source_transaction_index: Option<i64>,
-    #[serde_as(as = "TimestampSeconds")]
     pub source_timestamp: NaiveDateTime,
     pub token_id: String,
     pub destination_block_number: Option<i64>,
     pub destination_block_hash: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub destination_transaction_index: Option<i64>,
-    #[serde_as(as = "Option<TimestampSeconds>")]
     pub destination_timestamp: Option<NaiveDateTime>,
     pub depositor_address: String,
     pub receiver_address: String,
@@ -460,4 +436,21 @@ pub fn map_avail_send_to_transaction_result(send: AvailSend) -> TransactionData 
         receiver_address: send.receiver_address,
         amount: send.amount,
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TransactionRpc {
+    pub from: String,
+    pub to: String,
+    pub input: String,
+    pub value: String,
+    #[serde(deserialize_with = "hex_to_u32")]
+    pub nonce: u32,
+    pub block_hash: String,
+    #[serde(deserialize_with = "hex_to_u32")]
+    pub block_number: u32,
+    #[serde(deserialize_with = "hex_to_u32")]
+    pub transaction_index: u32,
+    pub hash: String,
 }

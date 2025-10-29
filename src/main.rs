@@ -1,11 +1,7 @@
 mod models;
-mod schema;
-
 use crate::models::*;
 
-use crate::schema::avail_sends::dsl::avail_sends;
-use crate::schema::ethereum_sends::dsl::ethereum_sends;
-use alloy::consensus::transaction::TxHashable;
+use alloy::consensus::transaction::{Recovered, TxHashable};
 use alloy::primitives::{Address, B256, U256, hex};
 use alloy::providers::ProviderBuilder;
 use anyhow::{Context, Result, anyhow};
@@ -22,10 +18,7 @@ use axum::{
 use backon::ExponentialBuilder;
 use backon::Retryable;
 use chrono::{NaiveDateTime, Utc};
-use diesel::{
-    ExpressionMethods, PgConnection, QueryDsl, RunQueryDsl, SelectableHelper, r2d2,
-    r2d2::ConnectionManager,
-};
+
 use http::Method;
 use jsonrpsee::{
     core::ClientError,
@@ -54,8 +47,23 @@ use tower_http::{
 };
 use tracing_subscriber::prelude::*;
 
+use crate::models::StatusEnum::{InProgress, Initialized};
+use alloy::consensus::TxEnvelope;
+use alloy::core::sol;
+use alloy::hex::{ToHex, ToHexExt};
+use alloy::network::TransactionResponse;
 use alloy::rpc::types::Transaction;
+use sqlx::{FromRow, PgPool, Pool, Postgres, Row, query};
 use std::sync::{Arc, Mutex};
+use tracing::log::__private_api::log;
+use tracing::log::info;
+use tracing::warn;
+// sol! {
+//     contract AvailBridge {
+//         function sendAVAIL(bytes32 recipient,uint256 amount)
+//     }
+// }
+
 #[cfg(not(target_env = "msvc"))]
 #[global_allocator]
 static GLOBAL: Jemalloc = Jemalloc;
@@ -80,7 +88,7 @@ pub struct AppState {
     pub eth_proof_failure_cache_maxage: u32,
     pub slot_mapping_cache_maxage: u32,
     pub transactions_cache_maxage: u32,
-    pub connection_pool: r2d2::Pool<ConnectionManager<PgConnection>>,
+    pub db: PgPool,
     pub chains: HashMap<u64, Chain>,
 }
 
@@ -93,14 +101,13 @@ async fn transaction(
     State(state): State<Arc<AppState>>,
     Path(hash): Path<B256>,
 ) -> Result<impl IntoResponse, ErrorResponse> {
-
     // fetch details of the eth transaction
-    let resp: Result<Transaction, ClientError> = state
+    let resp: Result<TransactionRpc, ClientError> = state
         .ethereum_client
         .request("eth_getTransactionByHash", rpc_params![hash])
         .await;
 
-    let tx: Transaction = resp.map_err(|e| {
+    let tx: TransactionRpc = resp.map_err(|e| {
         tracing::error!("❌ Cannot get transaction: {e:#}");
         if e.to_string().ends_with("status code: 429") {
             ErrorResponse::with_status_and_headers(
@@ -117,8 +124,30 @@ async fn transaction(
         }
     })?;
 
+    let recipient = &tx.input[10..74];
+    let amount = &tx.input[74..];
 
-    Ok(Json(json!({ "transaction": tx })))
+    query("INSERT INTO ethereum_sends (message_id, status, source_transaction_hash, source_block_number, source_block_hash,
+                                  source_timestamp, depositor_address, receiver_address, amount) VALUES(
+                                  $1, $2, $3, $4, $5, $6, $7, $8, $9)")
+    .bind(1)
+    .bind(Initialized)
+    .bind(tx.hash)
+    .bind(tx.block_number as i64)
+    .bind(tx.block_hash)
+    .bind(Utc::now())
+    .bind(tx.from)
+    .bind(format!("0x{}",recipient))
+    .bind(amount)
+    .execute(&state.db)
+    .await
+    .map_err(|e|{
+                     warn!("Cannot insert tx {}", e);
+                return  anyhow!("Cannot insert tx");
+                 }
+        )?;
+
+    Ok(())
 }
 
 #[inline(always)]
@@ -141,81 +170,83 @@ async fn transactions(
     Query(address_query): Query<TransactionQueryParams>,
     State(state): State<Arc<AppState>>,
 ) -> Result<impl IntoResponse, ErrorResponse> {
-    if address_query.eth_address.is_none() && address_query.avail_address.is_none() {
-        tracing::error!("Query params not provided.");
-        return Err(ErrorResponse::with_status_and_headers(
-            anyhow!("Invalid request: Query params not provided"),
-            StatusCode::BAD_REQUEST,
-            &[("Cache-Control", "max-age=60, must-revalidate")],
-        ));
-    }
+    // if address_query.eth_address.is_none() && address_query.avail_address.is_none() {
+    //     tracing::error!("Query params not provided.");
+    //     return Err(ErrorResponse::with_status_and_headers(
+    //         anyhow!("Invalid request: Query params not provided"),
+    //         StatusCode::BAD_REQUEST,
+    //         &[("Cache-Control", "max-age=60, must-revalidate")],
+    //     ));
+    // }
+    //
+    // let cloned_state = state.clone();
+    // let mut conn = cloned_state
+    //     .connection_pool
+    //     .get_timeout(Duration::from_secs(1))
+    //     .expect("Get connection pool");
+    //
+    // // Initialize the result variables
+    // let mut transaction_results: TransactionResult = TransactionResult::default();
+    //
+    // // Return the combined results
+    // if let Some(eth_address) = address_query.eth_address {
+    //     let ethereum_sends_results = ethereum_sends
+    //         .select(EthereumSend::as_select())
+    //         .filter(schema::ethereum_sends::depositor_address.eq(format!("{:?}", eth_address)))
+    //         .order_by(schema::ethereum_sends::source_timestamp.desc())
+    //         .limit(500)
+    //         .load::<EthereumSend>(&mut conn);
+    //
+    //     transaction_results.eth_send = ethereum_sends_results
+    //         .map_err(|e| {
+    //             tracing::error!("Cannot get ethereum send transactions:: {e:#}");
+    //             ErrorResponse::with_status_and_headers(
+    //                 e.into(),
+    //                 StatusCode::INTERNAL_SERVER_ERROR,
+    //                 &[("Cache-Control", "public, max-age=60, must-revalidate")],
+    //             )
+    //         })?
+    //         .into_iter()
+    //         .map(map_ethereum_send_to_transaction_result)
+    //         .collect();
+    // }
+    //
+    // if let Some(avail_address) = address_query.avail_address {
+    //     let avail_sends_results = avail_sends
+    //         .select(AvailSend::as_select())
+    //         .filter(schema::avail_sends::depositor_address.eq(format!("{:?}", avail_address)))
+    //         .order_by(schema::avail_sends::source_timestamp.desc())
+    //         .limit(500)
+    //         .load::<AvailSend>(&mut conn);
+    //
+    //     transaction_results.avail_send = avail_sends_results
+    //         .map_err(|e| {
+    //             tracing::error!("Cannot get avail send transactions: {e:#}");
+    //             ErrorResponse::with_status_and_headers(
+    //                 e.into(),
+    //                 StatusCode::INTERNAL_SERVER_ERROR,
+    //                 &[("Cache-Control", "public, max-age=60, must-revalidate")],
+    //             )
+    //         })?
+    //         .into_iter()
+    //         .map(map_avail_send_to_transaction_result)
+    //         .collect();
+    // }
+    //
+    // Ok((
+    //     StatusCode::OK,
+    //     [(
+    //         "Cache-Control",
+    //         format!(
+    //             "public, max-age={}, immutable",
+    //             state.transactions_cache_maxage
+    //         ),
+    //     )],
+    //     Json(json!(transaction_results)),
+    // )
+    //     .into_response())
 
-    let cloned_state = state.clone();
-    let mut conn = cloned_state
-        .connection_pool
-        .get_timeout(Duration::from_secs(1))
-        .expect("Get connection pool");
-
-    // Initialize the result variables
-    let mut transaction_results: TransactionResult = TransactionResult::default();
-
-    // Return the combined results
-    if let Some(eth_address) = address_query.eth_address {
-        let ethereum_sends_results = ethereum_sends
-            .select(EthereumSend::as_select())
-            .filter(schema::ethereum_sends::depositor_address.eq(format!("{:?}", eth_address)))
-            .order_by(schema::ethereum_sends::source_timestamp.desc())
-            .limit(500)
-            .load::<EthereumSend>(&mut conn);
-
-        transaction_results.eth_send = ethereum_sends_results
-            .map_err(|e| {
-                tracing::error!("Cannot get ethereum send transactions:: {e:#}");
-                ErrorResponse::with_status_and_headers(
-                    e.into(),
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    &[("Cache-Control", "public, max-age=60, must-revalidate")],
-                )
-            })?
-            .into_iter()
-            .map(map_ethereum_send_to_transaction_result)
-            .collect();
-    }
-
-    if let Some(avail_address) = address_query.avail_address {
-        let avail_sends_results = avail_sends
-            .select(AvailSend::as_select())
-            .filter(schema::avail_sends::depositor_address.eq(format!("{:?}", avail_address)))
-            .order_by(schema::avail_sends::source_timestamp.desc())
-            .limit(500)
-            .load::<AvailSend>(&mut conn);
-
-        transaction_results.avail_send = avail_sends_results
-            .map_err(|e| {
-                tracing::error!("Cannot get avail send transactions: {e:#}");
-                ErrorResponse::with_status_and_headers(
-                    e.into(),
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    &[("Cache-Control", "public, max-age=60, must-revalidate")],
-                )
-            })?
-            .into_iter()
-            .map(map_avail_send_to_transaction_result)
-            .collect();
-    }
-
-    Ok((
-        StatusCode::OK,
-        [(
-            "Cache-Control",
-            format!(
-                "public, max-age={}, immutable",
-                state.transactions_cache_maxage
-            ),
-        )],
-        Json(json!(transaction_results)),
-    )
-        .into_response())
+    Ok(())
 }
 
 #[inline(always)]
@@ -756,14 +787,19 @@ async fn main() {
     // Connection pool
     let connections_string = format!(
         "postgresql://{}:{}@{}/{}",
-        env::var("PG_USERNAME").unwrap_or("myuser".to_owned()),
-        env::var("PG_PASSWORD").unwrap_or("mypassword".to_owned()),
+        env::var("PG_USERNAME").unwrap_or("avail".to_owned()),
+        env::var("PG_PASSWORD").unwrap_or("avail".to_owned()),
         env::var("POSTGRES_URL").unwrap_or("localhost:5432".to_owned()),
-        env::var("POSTGRES_DB").unwrap_or("bridge-ui-indexer".to_owned()),
+        env::var("POSTGRES_DB").unwrap_or("ui-indexer".to_owned()),
     );
-    let connection_pool = r2d2::Pool::builder()
-        .build(ConnectionManager::<PgConnection>::new(connections_string))
-        .expect("Failed to create pool.");
+
+    info!("Connecting to {}", connections_string);
+
+    let db = PgPool::connect(&connections_string)
+        .await
+        .context("Cannot get connection pool")
+        .unwrap();
+
     const SUPPORTED_CHAIN_IDS: [u64; 7] = [1, 123, 32657, 84532, 11155111, 17000, 421614];
     // loop through expected_chain_ids and store the chain information, if value is missing, skip chain_id
     let chains = SUPPORTED_CHAIN_IDS
@@ -847,7 +883,7 @@ async fn main() {
                 transactions_mapping_response.parse::<u32>().ok()
             })
             .unwrap_or(60),
-        connection_pool,
+        db,
         chains,
     });
 
