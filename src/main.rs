@@ -2,7 +2,7 @@ mod models;
 use crate::models::*;
 
 use alloy::consensus::transaction::{Recovered, TxHashable};
-use alloy::primitives::{Address, B256, U256, hex};
+use alloy::primitives::{Address, B256, Log, LogData, U256, hex};
 use alloy::providers::ProviderBuilder;
 use anyhow::{Context, Result, anyhow};
 use axum::body::{Body, to_bytes};
@@ -50,14 +50,16 @@ use tracing_subscriber::prelude::*;
 use crate::models::StatusEnum::{InProgress, Initialized};
 use alloy::consensus::TxEnvelope;
 use alloy::core::sol;
-use alloy::hex::{ToHex, ToHexExt};
+use alloy::hex::{FromHex, ToHex, ToHexExt};
 use alloy::network::TransactionResponse;
-use alloy::rpc::types::Transaction;
+use alloy::rpc::types::{Transaction, TransactionReceipt};
 use sqlx::{FromRow, PgPool, Pool, Postgres, Row, query};
+use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 use tracing::log::__private_api::log;
 use tracing::log::info;
 use tracing::warn;
+
 // sol! {
 //     contract AvailBridge {
 //         function sendAVAIL(bytes32 recipient,uint256 amount)
@@ -101,37 +103,56 @@ async fn transaction(
     State(state): State<Arc<AppState>>,
     Path(hash): Path<B256>,
 ) -> Result<impl IntoResponse, ErrorResponse> {
-    // fetch details of the eth transaction
-    let resp: Result<TransactionRpc, ClientError> = state
+    let tx: TransactionRpc = state
         .ethereum_client
         .request("eth_getTransactionByHash", rpc_params![hash])
-        .await;
-
-    let tx: TransactionRpc = resp.map_err(|e| {
-        tracing::error!("❌ Cannot get transaction: {e:#}");
-        if e.to_string().ends_with("status code: 429") {
-            ErrorResponse::with_status_and_headers(
-                e.into(),
-                StatusCode::TOO_MANY_REQUESTS,
-                &[("Cache-Control", "public, max-age=60, must-revalidate")],
-            )
-        } else {
-            ErrorResponse::with_status_and_headers(
-                e.into(),
+        .await
+        .map_err(|e| {
+            tracing::error!("Cannot get transaction: {e:#}");
+            ErrorResponse::with_status(
+                anyhow!("Cannot get transaction"),
                 StatusCode::INTERNAL_SERVER_ERROR,
-                &[("Cache-Control", "public, max-age=60, must-revalidate")],
             )
-        }
-    })?;
+        })?;
 
+    let receipt: TransactionReceipt = state
+        .ethereum_client
+        .request("eth_getTransactionReceipt", rpc_params![hash])
+        .await
+        .map_err(|e| {
+            tracing::error!("Cannot get transaction receipt: {e:#}");
+            ErrorResponse::with_status(
+                anyhow!("Cannot get transaction receipt"),
+                StatusCode::INTERNAL_SERVER_ERROR,
+            )
+        })?;
+
+    let target_topic =
+        B256::from_str("0x06fd209663be9278f96bc53dfbf6cf3cdcf2172c38b5de30abff93ba443d653a")?;
+
+    let log_data: LogData = receipt
+        .inner
+        .logs()
+        .iter()
+        .find(|log| log.topics().contains(&target_topic))
+        .map(|log| log.data())
+        .unwrap()
+        .clone();
+
+    let event_data = U256::from_be_slice(&log_data.data);
+    // Extract the least-significant 64 bits/should match the message size
+    let message_id = event_data.as_limbs()[0] as i64;
+
+    // recipient must be from a function call data recipient+amount
+    // sendAVAIL(bytes32 recipient,uint256 amount)
     let recipient = &tx.input[10..74];
     let amount = &tx.input[74..];
 
     query("INSERT INTO ethereum_sends (message_id, status, source_transaction_hash, source_block_number, source_block_hash,
                                   source_timestamp, depositor_address, receiver_address, amount) VALUES(
                                   $1, $2, $3, $4, $5, $6, $7, $8, $9)")
-    .bind(1)
-    .bind(Initialized)
+        .bind(message_id)
+        .bind(Initialized)
     .bind(tx.hash)
     .bind(tx.block_number as i64)
     .bind(tx.block_hash)
