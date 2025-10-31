@@ -151,7 +151,7 @@ async fn transaction(
 
     let decoded = AvailBridgeEvents::decode_log(&log)?;
     let AvailBridgeEvents::MessageSent(call) = decoded.data;
-    let message_id = call.messageId;
+    let message_id: i64 = call.messageId.try_into()?;
 
     query("INSERT INTO ethereum_sends (message_id, status, source_transaction_hash, source_block_number, source_block_hash,
                                   source_timestamp, depositor_address, receiver_address, amount) VALUES(
@@ -163,8 +163,8 @@ async fn transaction(
         .bind(tx.block_hash)
         .bind(Utc::now())
         .bind(tx.from)
-        .bind(format!("0x{}", recipient))
-        .bind(amount)
+        .bind(*recipient)
+        .bind(format!("{:x}", amount))
         .execute(&state.db)
         .await
         .map_err(|e| {
