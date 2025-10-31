@@ -1,9 +1,11 @@
 mod models;
+use crate::AvailBridge::{AvailBridgeCalls, AvailBridgeEvents, MessageSent};
 use crate::models::*;
 
 use alloy::consensus::transaction::{Recovered, TxHashable};
 use alloy::primitives::{Address, B256, Log, LogData, U256, hex};
 use alloy::providers::ProviderBuilder;
+use alloy::sol_types::{SolCall, SolEventInterface, SolInterface};
 use anyhow::{Context, Result, anyhow};
 use axum::body::{Body, to_bytes};
 use axum::response::Response;
@@ -18,7 +20,14 @@ use axum::{
 use backon::ExponentialBuilder;
 use backon::Retryable;
 use chrono::{NaiveDateTime, Utc};
+use sp_core::hexdisplay::AsBytesRef;
 
+use crate::models::StatusEnum::{InProgress, Initialized};
+use alloy::consensus::TxEnvelope;
+use alloy::core::sol;
+use alloy::hex::{FromHex, ToHex, ToHexExt};
+use alloy::network::TransactionResponse;
+use alloy::rpc::types::{Transaction, TransactionReceipt};
 use http::Method;
 use jsonrpsee::{
     core::ClientError,
@@ -34,7 +43,10 @@ use serde_with::serde_as;
 use sha3::{Digest, Keccak256};
 use sp_core::{Decode, H160, H256};
 use sp_io::hashing::twox_128;
+use sqlx::{FromRow, PgPool, Pool, Postgres, Row, query};
 use std::collections::HashMap;
+use std::str::FromStr;
+use std::sync::{Arc, Mutex};
 use std::{env, process, time::Duration};
 #[cfg(not(target_env = "msvc"))]
 use tikv_jemallocator::Jemalloc;
@@ -45,26 +57,18 @@ use tower_http::{
     cors::{Any, CorsLayer},
     trace::TraceLayer,
 };
-use tracing_subscriber::prelude::*;
-
-use crate::models::StatusEnum::{InProgress, Initialized};
-use alloy::consensus::TxEnvelope;
-use alloy::core::sol;
-use alloy::hex::{FromHex, ToHex, ToHexExt};
-use alloy::network::TransactionResponse;
-use alloy::rpc::types::{Transaction, TransactionReceipt};
-use sqlx::{FromRow, PgPool, Pool, Postgres, Row, query};
-use std::str::FromStr;
-use std::sync::{Arc, Mutex};
 use tracing::log::__private_api::log;
 use tracing::log::info;
 use tracing::warn;
+use tracing_subscriber::prelude::*;
 
-// sol! {
-//     contract AvailBridge {
-//         function sendAVAIL(bytes32 recipient,uint256 amount)
-//     }
-// }
+sol! {
+    #[derive(Debug)]
+    contract AvailBridge {
+        function sendAVAIL(bytes32 recipient, uint256 amount) external;
+        event MessageSent(address indexed from, bytes32 indexed to, uint256 messageId);
+    }
+}
 
 #[cfg(not(target_env = "msvc"))]
 #[global_allocator]
@@ -127,45 +131,46 @@ async fn transaction(
             )
         })?;
 
+    let AvailBridgeCalls::sendAVAIL(call) =
+        AvailBridge::AvailBridgeCalls::abi_decode(hex::decode(tx.input)?.as_bytes_ref())?;
+
+    let recipient = call.recipient;
+    let amount = call.amount;
+
     let target_topic =
         B256::from_str("0x06fd209663be9278f96bc53dfbf6cf3cdcf2172c38b5de30abff93ba443d653a")?;
 
-    let log_data: LogData = receipt
+    let log = receipt
         .inner
         .logs()
         .iter()
         .find(|log| log.topics().contains(&target_topic))
-        .map(|log| log.data())
-        .unwrap()
-        .clone();
+        .ok_or_else(|| anyhow!("Cannot find transaction log"))?
+        .clone()
+        .into();
 
-    let event_data = U256::from_be_slice(&log_data.data);
-    // Extract the least-significant 64 bits/should match the message size
-    let message_id = event_data.as_limbs()[0] as i64;
-
-    // recipient must be from a function call data recipient+amount
-    // sendAVAIL(bytes32 recipient,uint256 amount)
-    let recipient = &tx.input[10..74];
-    let amount = &tx.input[74..];
+    let decoded = AvailBridgeEvents::decode_log(&log)?;
+    let AvailBridgeEvents::MessageSent(call) = decoded.data;
+    let message_id = call.messageId;
 
     query("INSERT INTO ethereum_sends (message_id, status, source_transaction_hash, source_block_number, source_block_hash,
                                   source_timestamp, depositor_address, receiver_address, amount) VALUES(
                                   $1, $2, $3, $4, $5, $6, $7, $8, $9)")
         .bind(message_id)
         .bind(Initialized)
-    .bind(tx.hash)
-    .bind(tx.block_number as i64)
-    .bind(tx.block_hash)
-    .bind(Utc::now())
-    .bind(tx.from)
-    .bind(format!("0x{}",recipient))
-    .bind(amount)
-    .execute(&state.db)
-    .await
-    .map_err(|e|{
-                     warn!("Cannot insert tx {}", e);
-                return  anyhow!("Cannot insert tx");
-                 }
+        .bind(tx.hash)
+        .bind(tx.block_number as i64)
+        .bind(tx.block_hash)
+        .bind(Utc::now())
+        .bind(tx.from)
+        .bind(format!("0x{}", recipient))
+        .bind(amount)
+        .execute(&state.db)
+        .await
+        .map_err(|e| {
+            warn!("Cannot insert tx {}", e);
+            return anyhow!("Cannot insert tx");
+        }
         )?;
 
     Ok(())
