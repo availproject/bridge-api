@@ -28,6 +28,7 @@ use alloy::core::sol;
 use alloy::hex::{FromHex, ToHex, ToHexExt};
 use alloy::network::TransactionResponse;
 use alloy::rpc::types::{Transaction, TransactionReceipt};
+use bigdecimal::BigDecimal;
 use http::Method;
 use jsonrpsee::{
     core::ClientError,
@@ -61,6 +62,7 @@ use tracing::log::__private_api::log;
 use tracing::log::info;
 use tracing::warn;
 use tracing_subscriber::prelude::*;
+use uuid::Uuid;
 
 sol! {
     #[derive(Debug)]
@@ -134,8 +136,16 @@ async fn transaction(
     let AvailBridgeCalls::sendAVAIL(call) =
         AvailBridge::AvailBridgeCalls::abi_decode(hex::decode(tx.input)?.as_bytes_ref())?;
 
-    let recipient = call.recipient;
+    let recipient = format!("0x{}", hex::encode(*call.recipient));
     let amount = call.amount;
+    let a = format!("{:x}", amount);
+    let av = u128::from_str_radix(&a, 16).map_err(|e| {
+        tracing::error!("Cannot parse amount: {e:#}");
+        ErrorResponse::with_status(
+            anyhow!("Cannot fetch valid transaction data"),
+            StatusCode::INTERNAL_SERVER_ERROR,
+        )
+    })?;
 
     let target_topic =
         B256::from_str("0x06fd209663be9278f96bc53dfbf6cf3cdcf2172c38b5de30abff93ba443d653a")?;
@@ -153,25 +163,34 @@ async fn transaction(
     let AvailBridgeEvents::MessageSent(call) = decoded.data;
     let message_id: i64 = call.messageId.try_into()?;
 
-    query("INSERT INTO ethereum_sends (message_id, status, source_transaction_hash, source_block_number, source_block_hash,
-                                  source_timestamp, depositor_address, receiver_address, amount) VALUES(
-                                  $1, $2, $3, $4, $5, $6, $7, $8, $9)")
-        .bind(message_id)
-        .bind(Initialized)
-        .bind(tx.hash)
-        .bind(tx.block_number as i64)
-        .bind(tx.block_hash)
-        .bind(Utc::now())
-        .bind(tx.from)
-        .bind(*recipient)
-        .bind(format!("{:x}", amount))
-        .execute(&state.db)
-        .await
-        .map_err(|e| {
-            warn!("Cannot insert tx {}", e);
-            return anyhow!("Cannot insert tx");
-        }
-        )?;
+    query(
+        "INSERT INTO event (
+
+                   id,
+                            message_id,
+                            event_type,
+                            status,
+                            sender,
+                            receiver,
+                            amount,
+                            block_hash
+                            ) VALUES(
+                                  $1, $2, $3, $4, $5, $6, $7, $8)",
+    )
+    .bind(H256::random().to_string())
+    .bind(message_id)
+    .bind("MessageSent")
+    .bind("Initialized")
+    .bind(tx.from)
+    .bind(recipient)
+    .bind(BigDecimal::from(av))
+    .bind(tx.block_hash)
+    .execute(&state.db)
+    .await
+    .map_err(|e| {
+        warn!("Cannot insert tx {}", e);
+        return anyhow!("Cannot insert tx");
+    })?;
 
     Ok(())
 }
@@ -196,84 +215,128 @@ async fn transactions(
     Query(address_query): Query<TransactionQueryParams>,
     State(state): State<Arc<AppState>>,
 ) -> Result<impl IntoResponse, ErrorResponse> {
-    // if address_query.eth_address.is_none() && address_query.avail_address.is_none() {
-    //     tracing::error!("Query params not provided.");
-    //     return Err(ErrorResponse::with_status_and_headers(
-    //         anyhow!("Invalid request: Query params not provided"),
-    //         StatusCode::BAD_REQUEST,
-    //         &[("Cache-Control", "max-age=60, must-revalidate")],
-    //     ));
-    // }
-    //
-    // let cloned_state = state.clone();
-    // let mut conn = cloned_state
-    //     .connection_pool
-    //     .get_timeout(Duration::from_secs(1))
-    //     .expect("Get connection pool");
-    //
-    // // Initialize the result variables
-    // let mut transaction_results: TransactionResult = TransactionResult::default();
-    //
-    // // Return the combined results
-    // if let Some(eth_address) = address_query.eth_address {
-    //     let ethereum_sends_results = ethereum_sends
-    //         .select(EthereumSend::as_select())
-    //         .filter(schema::ethereum_sends::depositor_address.eq(format!("{:?}", eth_address)))
-    //         .order_by(schema::ethereum_sends::source_timestamp.desc())
-    //         .limit(500)
-    //         .load::<EthereumSend>(&mut conn);
-    //
-    //     transaction_results.eth_send = ethereum_sends_results
-    //         .map_err(|e| {
-    //             tracing::error!("Cannot get ethereum send transactions:: {e:#}");
-    //             ErrorResponse::with_status_and_headers(
-    //                 e.into(),
-    //                 StatusCode::INTERNAL_SERVER_ERROR,
-    //                 &[("Cache-Control", "public, max-age=60, must-revalidate")],
-    //             )
-    //         })?
-    //         .into_iter()
-    //         .map(map_ethereum_send_to_transaction_result)
-    //         .collect();
-    // }
-    //
-    // if let Some(avail_address) = address_query.avail_address {
-    //     let avail_sends_results = avail_sends
-    //         .select(AvailSend::as_select())
-    //         .filter(schema::avail_sends::depositor_address.eq(format!("{:?}", avail_address)))
-    //         .order_by(schema::avail_sends::source_timestamp.desc())
-    //         .limit(500)
-    //         .load::<AvailSend>(&mut conn);
-    //
-    //     transaction_results.avail_send = avail_sends_results
-    //         .map_err(|e| {
-    //             tracing::error!("Cannot get avail send transactions: {e:#}");
-    //             ErrorResponse::with_status_and_headers(
-    //                 e.into(),
-    //                 StatusCode::INTERNAL_SERVER_ERROR,
-    //                 &[("Cache-Control", "public, max-age=60, must-revalidate")],
-    //             )
-    //         })?
-    //         .into_iter()
-    //         .map(map_avail_send_to_transaction_result)
-    //         .collect();
-    // }
-    //
-    // Ok((
-    //     StatusCode::OK,
-    //     [(
-    //         "Cache-Control",
-    //         format!(
-    //             "public, max-age={}, immutable",
-    //             state.transactions_cache_maxage
-    //         ),
-    //     )],
-    //     Json(json!(transaction_results)),
-    // )
-    //     .into_response())
+    if address_query.eth_address.is_none() && address_query.avail_address.is_none() {
+        tracing::error!("Query params not provided.");
+        return Err(ErrorResponse::with_status_and_headers(
+            anyhow!("Invalid request: Query params not provided"),
+            StatusCode::BAD_REQUEST,
+            &[("Cache-Control", "max-age=60, must-revalidate")],
+        ));
+    }
 
-    Ok(())
+    let mut transaction_results: TransactionResult = TransactionResult::default();
+
+    if let Some(eth_address) = address_query.eth_address {
+        let address: String = format!("{:?}", &address_query.eth_address.unwrap());
+
+
+        let eth_send = sqlx::query_as!(
+            TransactionData,
+            r#"
+        SELECT
+            es.message_id                    ,
+            es.sender                        ,
+            es.receiver,
+            es.amount
+    --         es.event_type           ,
+    --         es.proof             ,
+    --         es.block_hash
+
+        FROM event es
+    --         JOIN avail_sends de
+    --             ON de.message_id = es.message_id
+        WHERE es.sender = $1
+        ORDER BY es.message_id ASC
+        "#,
+            address,
+        )
+            .fetch_all(&state.db)
+            .await?;
+
+        transaction_results.eth_send = eth_send;
+    }
+
+    Ok(Json(json!(transaction_results)))
 }
+
+// if address_query.eth_address.is_none() && address_query.avail_address.is_none() {
+//     tracing::error!("Query params not provided.");
+//     return Err(ErrorResponse::with_status_and_headers(
+//         anyhow!("Invalid request: Query params not provided"),
+//         StatusCode::BAD_REQUEST,
+//         &[("Cache-Control", "max-age=60, must-revalidate")],
+//     ));
+// }
+//
+// let cloned_state = state.clone();
+// let mut conn = cloned_state
+//     .connection_pool
+//     .get_timeout(Duration::from_secs(1))
+//     .expect("Get connection pool");
+//
+// // Initialize the result variables
+// let mut transaction_results: TransactionResult = TransactionResult::default();
+//
+// // Return the combined results
+// if let Some(eth_address) = address_query.eth_address {
+//     let ethereum_sends_results = ethereum_sends
+//         .select(EthereumSend::as_select())
+//         .filter(schema::ethereum_sends::depositor_address.eq(format!("{:?}", eth_address)))
+//         .order_by(schema::ethereum_sends::source_timestamp.desc())
+//         .limit(500)
+//         .load::<EthereumSend>(&mut conn);
+//
+//     transaction_results.eth_send = ethereum_sends_results
+//         .map_err(|e| {
+//             tracing::error!("Cannot get ethereum send transactions:: {e:#}");
+//             ErrorResponse::with_status_and_headers(
+//                 e.into(),
+//                 StatusCode::INTERNAL_SERVER_ERROR,
+//                 &[("Cache-Control", "public, max-age=60, must-revalidate")],
+//             )
+//         })?
+//         .into_iter()
+//         .map(map_ethereum_send_to_transaction_result)
+//         .collect();
+// }
+//
+// if let Some(avail_address) = address_query.avail_address {
+//     let avail_sends_results = avail_sends
+//         .select(AvailSend::as_select())
+//         .filter(schema::avail_sends::depositor_address.eq(format!("{:?}", avail_address)))
+//         .order_by(schema::avail_sends::source_timestamp.desc())
+//         .limit(500)
+//         .load::<AvailSend>(&mut conn);
+//
+//     transaction_results.avail_send = avail_sends_results
+//         .map_err(|e| {
+//             tracing::error!("Cannot get avail send transactions: {e:#}");
+//             ErrorResponse::with_status_and_headers(
+//                 e.into(),
+//                 StatusCode::INTERNAL_SERVER_ERROR,
+//                 &[("Cache-Control", "public, max-age=60, must-revalidate")],
+//             )
+//         })?
+//         .into_iter()
+//         .map(map_avail_send_to_transaction_result)
+//         .collect();
+// }
+//
+// Ok((
+//     StatusCode::OK,
+//     [(
+//         "Cache-Control",
+//         format!(
+//             "public, max-age={}, immutable",
+//             state.transactions_cache_maxage
+//         ),
+//     )],
+//     Json(json!(transaction_results)),
+// )
+//     .into_response())
+
+//     Ok(())
+// }
 
 #[inline(always)]
 async fn get_eth_proof(

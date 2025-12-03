@@ -11,6 +11,8 @@ use serde::{Deserialize, Deserializer};
 use serde_json::json;
 use serde_with::serde_as;
 use sp_core::{H160, H256};
+use sqlx::Type;
+use sqlx::types::{BigDecimal, JsonValue};
 use std::io::Write;
 
 sol!(
@@ -286,8 +288,8 @@ where
     u32::from_str_radix(s.trim_start_matches("0x"), 16).map_err(serde::de::Error::custom)
 }
 
-#[derive(Debug, Serialize, Deserialize, sqlx::Type)]
-#[sqlx(type_name = "status")]
+#[derive(Debug, Serialize, Deserialize, Type)]
+#[sqlx(type_name = "status", rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum StatusEnum {
     #[sqlx(rename = "INITIALIZED")]
     Initialized,
@@ -339,26 +341,26 @@ pub struct AvailSend {
     pub destination_block_hash: Option<String>,
     pub destination_timestamp: Option<NaiveDateTime>,
     pub depositor_address: String,
-    pub receiver_address: String,
+
     pub amount: String,
 }
 
-pub struct EthereumSend {
-    pub message_id: i64,
-    pub status: StatusEnum,
-    pub source_transaction_hash: String,
-    pub source_block_number: i64,
-    pub source_block_hash: String,
-    pub source_timestamp: NaiveDateTime,
-    pub token_id: String,
-    pub destination_block_number: Option<i64>,
-    pub destination_block_hash: Option<String>,
-    pub destination_transaction_index: Option<i64>,
-    pub destination_timestamp: Option<NaiveDateTime>,
-    pub depositor_address: String,
-    pub receiver_address: String,
-    pub amount: String,
-}
+// pub struct EthereumSend {
+//     pub message_id: i64,
+//     pub status: StatusEnum,
+//     pub source_transaction_hash: String,
+//     pub source_block_number: i64,
+//     pub source_block_hash: String,
+//     pub source_timestamp: NaiveDateTime,
+//     pub token_id: String,
+//     pub destination_block_number: Option<i64>,
+//     pub destination_block_hash: Option<String>,
+//     pub destination_transaction_index: Option<i64>,
+//     pub destination_timestamp: Option<NaiveDateTime>,
+//     pub depositor_address: String,
+//     pub receiver_address: String,
+//     pub amount: String,
+// }
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -371,23 +373,10 @@ pub struct TransactionQueryParams {
 #[serde_as]
 #[serde(rename_all = "camelCase")]
 pub struct TransactionData {
-    pub message_id: i64,
-    pub status: StatusEnum,
-    pub source_transaction_hash: String,
-    pub source_block_number: i64,
-    pub source_block_hash: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub source_transaction_index: Option<i64>,
-    pub source_timestamp: NaiveDateTime,
-    pub token_id: String,
-    pub destination_block_number: Option<i64>,
-    pub destination_block_hash: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub destination_transaction_index: Option<i64>,
-    pub destination_timestamp: Option<NaiveDateTime>,
-    pub depositor_address: String,
-    pub receiver_address: String,
-    pub amount: String,
+    pub message_id: BigDecimal,
+    pub sender: String,
+    pub receiver: String,
+    pub amount: BigDecimal,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -397,46 +386,46 @@ pub struct TransactionResult {
     pub eth_send: Vec<TransactionData>,
 }
 
-pub fn map_ethereum_send_to_transaction_result(send: EthereumSend) -> TransactionData {
-    TransactionData {
-        message_id: send.message_id,
-        status: send.status,
-        source_transaction_hash: send.source_transaction_hash,
-        source_block_number: send.source_block_number,
-        source_block_hash: send.source_block_hash,
-        source_transaction_index: None,
-        source_timestamp: send.source_timestamp,
-        token_id: send.token_id,
-        destination_block_number: send.destination_block_number,
-        destination_block_hash: send.destination_block_hash,
-        destination_transaction_index: send.destination_transaction_index,
-        destination_timestamp: send.destination_timestamp,
-        depositor_address: send.depositor_address,
-        receiver_address: send.receiver_address,
-        amount: send.amount,
-    }
-}
+// pub fn map_ethereum_send_to_transaction_result(send: EthereumSend) -> TransactionData {
+//     TransactionData {
+//         message_id: send.message_id,
+//         status: send.status,
+//         source_transaction_hash: send.source_transaction_hash,
+//         source_block_number: send.source_block_number,
+//         source_block_hash: send.source_block_hash,
+//         source_transaction_index: None,
+//         source_timestamp: send.source_timestamp,
+//         token_id: send.token_id,
+//         destination_block_number: send.destination_block_number,
+//         destination_block_hash: send.destination_block_hash,
+//         destination_transaction_index: send.destination_transaction_index,
+//         destination_timestamp: send.destination_timestamp,
+//         depositor_address: send.depositor_address,
+//         receiver_address: send.receiver_address,
+//         amount: send.amount,
+//     }
+// }
 
 // Function to map AvailSend to TransactionResult
-pub fn map_avail_send_to_transaction_result(send: AvailSend) -> TransactionData {
-    TransactionData {
-        message_id: send.message_id,
-        status: send.status,
-        source_transaction_hash: send.source_transaction_hash,
-        source_block_number: send.source_block_number,
-        source_block_hash: send.source_block_hash,
-        source_transaction_index: Some(send.source_transaction_index),
-        source_timestamp: send.source_timestamp,
-        token_id: send.token_id,
-        destination_block_number: send.destination_block_number,
-        destination_block_hash: send.destination_block_hash,
-        destination_transaction_index: None,
-        destination_timestamp: send.destination_timestamp,
-        depositor_address: send.depositor_address,
-        receiver_address: send.receiver_address,
-        amount: send.amount,
-    }
-}
+// pub fn map_avail_send_to_transaction_result(send: AvailSend) -> TransactionData {
+//     TransactionData {
+//         message_id: send.message_id,
+//         status: send.status,
+//         source_transaction_hash: send.source_transaction_hash,
+//         source_block_number: send.source_block_number,
+//         source_block_hash: send.source_block_hash,
+//         source_transaction_index: Some(send.source_transaction_index),
+//         source_timestamp: send.source_timestamp,
+//         token_id: send.token_id,
+//         destination_block_number: send.destination_block_number,
+//         destination_block_hash: send.destination_block_hash,
+//         destination_transaction_index: None,
+//         destination_timestamp: send.destination_timestamp,
+//         depositor_address: send.depositor_address,
+//         receiver_address: send.receiver_address,
+//         amount: send.amount,
+//     }
+// }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
