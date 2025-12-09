@@ -1680,6 +1680,7 @@ dependencies = [
  "http",
  "jsonrpsee",
  "lazy_static",
+ "log",
  "reqwest",
  "serde",
  "serde_json",

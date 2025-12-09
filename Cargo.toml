@@ -35,6 +35,7 @@ sqlx = { version = "0.8.6", features = ["postgres", "runtime-tokio-rustls", "mac
 #alloy-rpc-types ="1.0.27"
 bigdecimal = { version = "0.4", features = ["serde"] }
 uuid = { version = "1.18.0", features = ["v4"] }
+log = "0.4.25"
 
 [target.'cfg(not(target_env = "msvc"))'.dependencies]
 tikv-jemallocator = "0.6"

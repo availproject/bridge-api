@@ -12,8 +12,7 @@ use serde_json::json;
 use serde_with::serde_as;
 use sp_core::{H160, H256};
 use sqlx::Type;
-use sqlx::types::{BigDecimal, JsonValue};
-use std::io::Write;
+use sqlx::types::{BigDecimal};
 
 sol!(
     #[allow(missing_docs)]
@@ -291,13 +290,13 @@ where
 #[derive(Debug, Serialize, Deserialize, Type)]
 #[sqlx(type_name = "status", rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum StatusEnum {
-    #[sqlx(rename = "INITIALIZED")]
+    #[sqlx(rename = "initiated")]
     Initialized,
-    #[sqlx(rename = "IN_PROGRESS")]
+    #[sqlx(rename = "in_progress")]
     InProgress,
-    #[sqlx(rename = "CLAIM_PENDING")]
+    #[sqlx(rename = "claim_ready")]
     ClaimPending,
-    #[sqlx(rename = "BRIDGED")]
+    #[sqlx(rename = "bridged")]
     Bridged,
 }
 
@@ -376,7 +375,10 @@ pub struct TransactionData {
     pub message_id: BigDecimal,
     pub sender: String,
     pub receiver: String,
+    pub block_hash: Option<String>,
     pub amount: BigDecimal,
+    pub status: String,
+    pub event_type: String,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]

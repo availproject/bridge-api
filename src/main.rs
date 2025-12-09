@@ -1,11 +1,10 @@
 mod models;
-use crate::AvailBridge::{AvailBridgeCalls, AvailBridgeEvents, MessageSent};
+use crate::AvailBridge::{AvailBridgeCalls, AvailBridgeEvents};
 use crate::models::*;
 
-use alloy::consensus::transaction::{Recovered, TxHashable};
-use alloy::primitives::{Address, B256, Log, LogData, U256, hex};
+use alloy::primitives::{Address, B256, U256, hex};
 use alloy::providers::ProviderBuilder;
-use alloy::sol_types::{SolCall, SolEventInterface, SolInterface};
+use alloy::sol_types::{SolEventInterface, SolInterface};
 use anyhow::{Context, Result, anyhow};
 use axum::body::{Body, to_bytes};
 use axum::response::Response;
@@ -19,15 +18,11 @@ use axum::{
 };
 use backon::ExponentialBuilder;
 use backon::Retryable;
-use chrono::{NaiveDateTime, Utc};
+use chrono::{Utc};
 use sp_core::hexdisplay::AsBytesRef;
 
-use crate::models::StatusEnum::{InProgress, Initialized};
-use alloy::consensus::TxEnvelope;
 use alloy::core::sol;
-use alloy::hex::{FromHex, ToHex, ToHexExt};
-use alloy::network::TransactionResponse;
-use alloy::rpc::types::{Transaction, TransactionReceipt};
+use alloy::rpc::types::{TransactionReceipt};
 use bigdecimal::BigDecimal;
 use http::Method;
 use jsonrpsee::{
@@ -38,16 +33,14 @@ use jsonrpsee::{
 };
 use lazy_static::lazy_static;
 use reqwest::Client;
-use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use serde_with::serde_as;
 use sha3::{Digest, Keccak256};
-use sp_core::{Decode, H160, H256};
+use sp_core::{Decode};
 use sp_io::hashing::twox_128;
-use sqlx::{FromRow, PgPool, Pool, Postgres, Row, query};
+use sqlx::{PgPool, query};
 use std::collections::HashMap;
 use std::str::FromStr;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc};
 use std::{env, process, time::Duration};
 #[cfg(not(target_env = "msvc"))]
 use tikv_jemallocator::Jemalloc;
@@ -58,11 +51,8 @@ use tower_http::{
     cors::{Any, CorsLayer},
     trace::TraceLayer,
 };
-use tracing::log::__private_api::log;
-use tracing::log::info;
-use tracing::warn;
+use tracing::{info, warn};
 use tracing_subscriber::prelude::*;
-use uuid::Uuid;
 
 sol! {
     #[derive(Debug)]
@@ -164,9 +154,7 @@ async fn transaction(
     let message_id: i64 = call.messageId.try_into()?;
 
     query(
-        "INSERT INTO event (
-
-                   id,
+        "INSERT INTO bridge_event (
                             message_id,
                             event_type,
                             status,
@@ -175,9 +163,8 @@ async fn transaction(
                             amount,
                             block_hash
                             ) VALUES(
-                                  $1, $2, $3, $4, $5, $6, $7, $8)",
+                                  $1, $2, $3, $4, $5, $6, $7)",
     )
-    .bind(H256::random().to_string())
     .bind(message_id)
     .bind("MessageSent")
     .bind("Initialized")
@@ -215,6 +202,9 @@ async fn transactions(
     Query(address_query): Query<TransactionQueryParams>,
     State(state): State<Arc<AppState>>,
 ) -> Result<impl IntoResponse, ErrorResponse> {
+
+    info!("Transaction query: {:?}", address_query);
+
     if address_query.eth_address.is_none() && address_query.avail_address.is_none() {
         tracing::error!("Query params not provided.");
         return Err(ErrorResponse::with_status_and_headers(
@@ -234,21 +224,24 @@ async fn transactions(
             TransactionData,
             r#"
         SELECT
-            es.message_id                    ,
-            es.sender                        ,
+            es.message_id,
+            es.sender,
             es.receiver,
-            es.amount
-    --         es.event_type           ,
+            es.amount,
+            es.event_type,
+             es.status,
     --         es.proof             ,
-    --         es.block_hash
+            es.block_hash
 
-        FROM event es
+        FROM bridge_event es
     --         JOIN avail_sends de
     --             ON de.message_id = es.message_id
         WHERE es.sender = $1
+        AND es.event_type = $2
         ORDER BY es.message_id ASC
         "#,
             address,
+            "MessageSent"
         )
             .fetch_all(&state.db)
             .await?;
