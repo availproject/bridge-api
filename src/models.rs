@@ -288,7 +288,7 @@ where
 }
 
 #[derive(Debug, Serialize, Deserialize, Type)]
-#[sqlx(type_name = "status", rename_all = "SCREAMING_SNAKE_CASE")]
+#[sqlx(type_name = "status")]
 pub enum StatusEnum {
     #[sqlx(rename = "initiated")]
     Initialized,
@@ -378,7 +378,6 @@ pub struct TransactionData {
     pub block_hash: Option<String>,
     pub amount: BigDecimal,
     pub status: String,
-    pub event_type: String,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]

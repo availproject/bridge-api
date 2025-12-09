@@ -228,7 +228,6 @@ async fn transactions(
             es.sender,
             es.receiver,
             es.amount,
-            es.event_type,
              es.status,
     --         es.proof             ,
             es.block_hash
