@@ -18,11 +18,11 @@ use axum::{
 };
 use backon::ExponentialBuilder;
 use backon::Retryable;
-use chrono::{Utc};
+use chrono::{DateTime, TimeZone, Utc};
 use sp_core::hexdisplay::AsBytesRef;
 
 use alloy::core::sol;
-use alloy::rpc::types::{TransactionReceipt};
+use alloy::rpc::types::TransactionReceipt;
 use bigdecimal::BigDecimal;
 use http::Method;
 use jsonrpsee::{
@@ -35,12 +35,12 @@ use lazy_static::lazy_static;
 use reqwest::Client;
 use serde_json::{Value, json};
 use sha3::{Digest, Keccak256};
-use sp_core::{Decode};
+use sp_core::Decode;
 use sp_io::hashing::twox_128;
 use sqlx::{PgPool, query};
 use std::collections::HashMap;
 use std::str::FromStr;
-use std::sync::{Arc};
+use std::sync::Arc;
 use std::{env, process, time::Duration};
 #[cfg(not(target_env = "msvc"))]
 use tikv_jemallocator::Jemalloc;
@@ -202,7 +202,6 @@ async fn transactions(
     Query(address_query): Query<TransactionQueryParams>,
     State(state): State<Arc<AppState>>,
 ) -> Result<impl IntoResponse, ErrorResponse> {
-
     info!("Transaction query: {:?}", address_query);
 
     if address_query.eth_address.is_none() && address_query.avail_address.is_none() {
@@ -219,9 +218,8 @@ async fn transactions(
     if let Some(eth_address) = address_query.eth_address {
         let address: String = format!("{:?}", &address_query.eth_address.unwrap());
 
-
-        let eth_send = sqlx::query_as!(
-            TransactionData,
+        let rows: Vec<TransactionRow> = sqlx::query_as!(
+            TransactionRow,
             r#"
         SELECT
             es.message_id,
@@ -231,7 +229,6 @@ async fn transactions(
              es.status,
     --         es.proof             ,
             es.block_hash
-
         FROM bridge_event es
     --         JOIN avail_sends de
     --             ON de.message_id = es.message_id
@@ -242,13 +239,60 @@ async fn transactions(
             address,
             "MessageSent"
         )
-            .fetch_all(&state.db)
-            .await?;
+        .fetch_all(&state.db)
+        .await?;
+
+        let slot_block_head = SLOT_BLOCK_HEAD.read().await;
+        let (slot, block, hash, timestamp) = slot_block_head.as_ref().ok_or_else(|| {
+            ErrorResponse::with_status(anyhow!("Not found"), StatusCode::INTERNAL_SERVER_ERROR)
+        })?;
+
+        info!("Timestamp: {}", timestamp);
+
+        let claim_estimate = time_until_next_update(*timestamp).await;
+        let mut eth_send: Vec<TransactionData> = Vec::new();
+
+        // TODO stats
+        for r in rows {
+            let mut estimate = None;
+            if r.status == "In_progress" {
+                estimate = Some(claim_estimate.as_secs());
+            } else if r.status == "Initialized" {
+                estimate = Some(60*60);
+            }
+
+            let tx = TransactionData {
+                message_id: r.message_id,
+                sender: r.sender,
+                receiver: r.receiver,
+                block_hash: r.block_hash,
+                amount: r.amount,
+                status: r.status,
+                claim_estimate: estimate,
+            };
+            eth_send.push(tx);
+        }
 
         transaction_results.eth_send = eth_send;
     }
 
     Ok(Json(json!(transaction_results)))
+}
+
+async fn time_until_next_update(timestamp_s: u64) -> Duration {
+    let now_ms = Utc::now().timestamp_millis() as u64;
+
+    let last_update_ms = Duration::from_secs(timestamp_s).as_millis() as u64;
+
+    // elapsed time in milliseconds
+    let elapsed_ms = now_ms.saturating_sub(last_update_ms);
+
+    let update_frequency_ms: u64 = 60 * 60 * 1000; // 1 hour in ms
+
+    // remaining time, 0 if already past the interval
+    let remaining_ms = update_frequency_ms.saturating_sub(elapsed_ms);
+
+    Duration::from_millis(remaining_ms)
 }
 
 // if address_query.eth_address.is_none() && address_query.avail_address.is_none() {
@@ -999,6 +1043,7 @@ async fn main() {
         .await
         .unwrap();
 
+    tracing::info!("Starting head tracking task?????????");
     tokio::spawn(async move {
         tracing::info!("Starting head tracking task");
         if let Err(e) = track_slot_avail_task(shared_state.clone()).await {
@@ -1109,6 +1154,8 @@ async fn track_slot_avail_task(state: Arc<AppState>) -> Result<()> {
                 let mut slot_block_head = SLOT_BLOCK_HEAD.write().await;
                 tracing::info!("Beacon mapping: {slot}:{bl}");
                 *slot_block_head = Some((slot, bl, hash, timestamp));
+                info!("Timestamp form task: {:?}", timestamp);
+
                 drop(slot_block_head);
 
                 tokio::time::sleep(Duration::from_secs(60 * 5)).await;

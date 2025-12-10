@@ -371,6 +371,18 @@ pub struct TransactionQueryParams {
 #[derive(Debug, Serialize, Deserialize)]
 #[serde_as]
 #[serde(rename_all = "camelCase")]
+pub struct TransactionRow {
+    pub message_id: BigDecimal,
+    pub sender: String,
+    pub receiver: String,
+    pub block_hash: Option<String>,
+    pub amount: BigDecimal,
+    pub status: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde_as]
+#[serde(rename_all = "camelCase")]
 pub struct TransactionData {
     pub message_id: BigDecimal,
     pub sender: String,
@@ -378,6 +390,8 @@ pub struct TransactionData {
     pub block_hash: Option<String>,
     pub amount: BigDecimal,
     pub status: String,
+    #[serde(default)]
+    pub claim_estimate: Option<u64>,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
