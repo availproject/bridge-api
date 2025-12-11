@@ -11,7 +11,7 @@ use serde::{Deserialize, Deserializer};
 use serde_json::json;
 use serde_with::serde_as;
 use sp_core::{H160, H256};
-use sqlx::Type;
+use sqlx::{FromRow, Type};
 use sqlx::types::{BigDecimal};
 
 sol!(
@@ -368,16 +368,17 @@ pub struct TransactionQueryParams {
     pub avail_address: Option<H256>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, FromRow)]
 #[serde_as]
 #[serde(rename_all = "camelCase")]
 pub struct TransactionRow {
     pub message_id: BigDecimal,
     pub sender: String,
     pub receiver: String,
-    pub block_hash: Option<String>,
+    pub source_block_hash: String,
+    pub source_transaction_hash: String,
     pub amount: BigDecimal,
-    pub status: String,
+    pub final_status: String,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -387,7 +388,8 @@ pub struct TransactionData {
     pub message_id: BigDecimal,
     pub sender: String,
     pub receiver: String,
-    pub block_hash: Option<String>,
+    pub source_block_hash: String,
+    pub source_transaction_hash: String,
     pub amount: BigDecimal,
     pub status: String,
     #[serde(default)]

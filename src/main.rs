@@ -18,7 +18,7 @@ use axum::{
 };
 use backon::ExponentialBuilder;
 use backon::Retryable;
-use chrono::{DateTime, TimeZone, Utc};
+use chrono::Utc;
 use sp_core::hexdisplay::AsBytesRef;
 
 use alloy::core::sol;
@@ -218,27 +218,34 @@ async fn transactions(
     if let Some(eth_address) = address_query.eth_address {
         let address: String = format!("{:?}", &address_query.eth_address.unwrap());
 
-        let rows: Vec<TransactionRow> = sqlx::query_as!(
-            TransactionRow,
+        let rows: Vec<TransactionRow> = sqlx::query_as::<_, TransactionRow>(
             r#"
-        SELECT
-            es.message_id,
-            es.sender,
-            es.receiver,
-            es.amount,
-             es.status,
-    --         es.proof             ,
-            es.block_hash
-        FROM bridge_event es
-    --         JOIN avail_sends de
-    --             ON de.message_id = es.message_id
-        WHERE es.sender = $1
+    SELECT
+        es.message_id,
+        es.sender,
+        es.receiver,
+        es.amount,
+        es.source_block_hash,
+        es.source_transaction_hash,
+        COALESCE(
+            CASE
+                WHEN es.status = 'initiated' THEN 'initiated' -- needed?
+                WHEN es.status = 'in_progress' AND aet.message_id IS NULL THEN 'in_progress'
+                WHEN es.status = 'in_progress' AND aet.message_id IS NOT NULL THEN 'bridged'
+                ELSE es.status
+            END,
+            'in_progress'
+        ) AS final_status
+    FROM bridge_event es
+    LEFT JOIN public.avail_execute_table AS aet
+        ON es.message_id = aet.message_id
+    WHERE es.sender = $1
         AND es.event_type = $2
-        ORDER BY es.message_id ASC
-        "#,
-            address,
-            "MessageSent"
+    ORDER BY es.message_id ASC limit 1000
+    "#,
         )
+        .bind(address)
+        .bind("MessageSent")
         .fetch_all(&state.db)
         .await?;
 
@@ -255,19 +262,18 @@ async fn transactions(
         // TODO stats
         for r in rows {
             let mut estimate = None;
-            if r.status == "In_progress" {
+            if r.final_status != "bridged" {
                 estimate = Some(claim_estimate.as_secs());
-            } else if r.status == "Initialized" {
-                estimate = Some(60*60);
             }
 
             let tx = TransactionData {
                 message_id: r.message_id,
                 sender: r.sender,
                 receiver: r.receiver,
-                block_hash: r.block_hash,
+                source_block_hash: r.source_block_hash,
+                source_transaction_hash: r.source_transaction_hash,
                 amount: r.amount,
-                status: r.status,
+                status: r.final_status,
                 claim_estimate: estimate,
             };
             eth_send.push(tx);
@@ -1043,7 +1049,6 @@ async fn main() {
         .await
         .unwrap();
 
-    tracing::info!("Starting head tracking task?????????");
     tokio::spawn(async move {
         tracing::info!("Starting head tracking task");
         if let Err(e) = track_slot_avail_task(shared_state.clone()).await {
