@@ -227,6 +227,7 @@ async fn transactions(
         es.amount,
         es.source_block_hash,
         es.source_transaction_hash,
+        ai.block_height,
         COALESCE(
             CASE
                 WHEN es.status = 'initiated' THEN 'initiated' -- needed?
@@ -236,9 +237,11 @@ async fn transactions(
             END,
             'in_progress'
         ) AS final_status
+
     FROM bridge_event es
     LEFT JOIN public.avail_execute_table AS aet
         ON es.message_id = aet.message_id
+    INNER JOIN public.avail_indexer ai on ai.id = aet.id
     WHERE es.sender = $1
         AND es.event_type = $2
     ORDER BY es.message_id ASC limit 1000
@@ -275,6 +278,7 @@ async fn transactions(
                 amount: r.amount,
                 status: r.final_status,
                 claim_estimate: estimate,
+                destination_block_number: r.block_height
             };
             eth_send.push(tx);
         }
@@ -282,8 +286,89 @@ async fn transactions(
         transaction_results.eth_send = eth_send;
     }
 
+
+    if let Some(avail_address) = address_query.avail_address {
+        let rows: Vec<TransactionRow> = sqlx::query_as::<_, TransactionRow>(
+            r#"
+                    SELECT
+                ai1.id as message_id,
+                ai1.signature_address,
+                es.to,
+                es.amount,
+                ai1.ext_hash,
+                ai1.ext_hash,
+                ai1.block_height,
+                COALESCE(
+                CASE
+                WHEN aet.message_id IS NULL THEN 'in_progress'
+                WHEN aet.message_id IS NOT NULL THEN 'bridged'
+                END,
+                'in_progress'
+                ) AS final_status
+                FROM avail_send_message_table es
+                INNER JOIN public.avail_indexer AS ai1
+                ON ai1.id = es.id
+                INNER JOIN public.bridge_event AS aet
+                ON es.id = aet.message_id
+                LEFT JOIN public.avail_indexer AS ai2
+                ON ai2.id = aet.message_id
+                WHERE ai1.signature_address = $1
+                AND aet.event_type = $3
+
+                AND es.type = $2
+                ORDER BY es.id ASC
+                LIMIT 1000;
+    "#,
+        )
+            .bind(avail_address)
+            .bind("FungibleToken")
+            .bind("MessageReceived")
+            .fetch_all(&state.db)
+            .await?;
+
+        let slot_block_head = SLOT_BLOCK_HEAD.read().await;
+        let (slot, block, hash, timestamp) = slot_block_head.as_ref().ok_or_else(|| {
+            ErrorResponse::with_status(anyhow!("Not found"), StatusCode::INTERNAL_SERVER_ERROR)
+        })?;
+
+        info!("Timestamp: {}", timestamp);
+
+        let claim_estimate = time_until_next_update(*timestamp).await;
+        let mut avail_send: Vec<TransactionData> = Vec::new();
+
+        // TODO stats
+        for r in rows {
+            let mut estimate = None;
+            if r.final_status != "bridged" {
+                estimate = Some(claim_estimate.as_secs());
+            }
+
+            let tx = TransactionData {
+                message_id: r.message_id,
+                sender: r.sender,
+                receiver: r.receiver,
+                source_block_hash: r.source_block_hash,
+                source_transaction_hash: r.source_transaction_hash,
+                amount: r.amount,
+                status: r.final_status,
+                claim_estimate: estimate,
+                destination_block_number: r.block_height
+            };
+            avail_send.push(tx);
+        }
+
+        transaction_results.avail_send = avail_send;
+    }
+
+
+
     Ok(Json(json!(transaction_results)))
 }
+
+
+
+
+
 
 async fn time_until_next_update(timestamp_s: u64) -> Duration {
     let now_ms = Utc::now().timestamp_millis() as u64;

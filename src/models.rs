@@ -365,7 +365,7 @@ pub struct AvailSend {
 #[serde(rename_all = "camelCase")]
 pub struct TransactionQueryParams {
     pub eth_address: Option<H160>,
-    pub avail_address: Option<H256>,
+    pub avail_address: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, FromRow)]
@@ -379,6 +379,7 @@ pub struct TransactionRow {
     pub source_transaction_hash: String,
     pub amount: BigDecimal,
     pub final_status: String,
+    pub block_height: i32,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -394,6 +395,7 @@ pub struct TransactionData {
     pub status: String,
     #[serde(default)]
     pub claim_estimate: Option<u64>,
+    pub destination_block_number: i32,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
