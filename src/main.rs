@@ -213,6 +213,13 @@ async fn transactions(
         ));
     }
 
+    let avail_finalized_block: i32 = state
+        .avail_client
+        .request("chain_getFinalizedHead", rpc_params![])
+        .await
+        .context("finalized head").unwrap_or(0);
+
+
     let mut transaction_results: TransactionResult = TransactionResult::default();
 
     if let Some(eth_address) = address_query.eth_address {
@@ -230,7 +237,6 @@ async fn transactions(
         ai.block_height,
         COALESCE(
             CASE
-                WHEN es.status = 'initiated' THEN 'initiated' -- needed?
                 WHEN es.status = 'in_progress' AND aet.message_id IS NULL THEN 'in_progress'
                 WHEN es.status = 'in_progress' AND aet.message_id IS NOT NULL THEN 'bridged'
                 ELSE es.status
@@ -257,15 +263,20 @@ async fn transactions(
             ErrorResponse::with_status(anyhow!("Not found"), StatusCode::INTERNAL_SERVER_ERROR)
         })?;
 
-        info!("Timestamp: {}", timestamp);
-
         let claim_estimate = time_until_next_update(*timestamp).await;
         let mut eth_send: Vec<TransactionData> = Vec::new();
 
-        // TODO stats
-        for r in rows {
+        for mut r in rows {
             let mut estimate = None;
-            if r.final_status != "bridged" {
+
+            if r.final_status != "bridged"
+                && r.final_status != "in_progress"
+                && r.block_height <= *block as i32
+            {
+                r.final_status = "claim_ready".to_string();
+            }
+
+            if r.final_status != "bridged" && r.final_status != "claim_ready" {
                 estimate = Some(claim_estimate.as_secs());
             }
 
@@ -278,7 +289,7 @@ async fn transactions(
                 amount: r.amount,
                 status: r.final_status,
                 claim_estimate: estimate,
-                destination_block_number: r.block_height
+                destination_block_number: r.block_height,
             };
             eth_send.push(tx);
         }
@@ -286,21 +297,19 @@ async fn transactions(
         transaction_results.eth_send = eth_send;
     }
 
-
     if let Some(avail_address) = address_query.avail_address {
         let rows: Vec<TransactionRow> = sqlx::query_as::<_, TransactionRow>(
             r#"
                     SELECT
                 ai1.id as message_id,
-                ai1.signature_address,
-                es.to,
+                ai1.signature_address as sender,
+                es.to as receiver,
                 es.amount,
-                ai1.ext_hash,
-                ai1.ext_hash,
+                ai1.block_hash as source_block_hash,
+                ai1.ext_hash as source_transaction_hash,
                 ai1.block_height,
                 COALESCE(
                 CASE
-                WHEN aet.message_id IS NULL THEN 'in_progress'
                 WHEN aet.message_id IS NOT NULL THEN 'bridged'
                 END,
                 'in_progress'
@@ -308,41 +317,70 @@ async fn transactions(
                 FROM avail_send_message_table es
                 INNER JOIN public.avail_indexer AS ai1
                 ON ai1.id = es.id
-                INNER JOIN public.bridge_event AS aet
+                LEFT JOIN public.bridge_event AS aet
                 ON es.id = aet.message_id
                 LEFT JOIN public.avail_indexer AS ai2
                 ON ai2.id = aet.message_id
                 WHERE ai1.signature_address = $1
                 AND aet.event_type = $3
-
+                AND ai1.ext_success = $4
                 AND es.type = $2
                 ORDER BY es.id ASC
                 LIMIT 1000;
     "#,
         )
-            .bind(avail_address)
-            .bind("FungibleToken")
-            .bind("MessageReceived")
-            .fetch_all(&state.db)
-            .await?;
+        .bind(avail_address)
+        .bind("FungibleToken")
+        .bind("MessageReceived")
+        .bind(true)
+        .fetch_all(&state.db)
+        .await?;
 
-        let slot_block_head = SLOT_BLOCK_HEAD.read().await;
-        let (slot, block, hash, timestamp) = slot_block_head.as_ref().ok_or_else(|| {
-            ErrorResponse::with_status(anyhow!("Not found"), StatusCode::INTERNAL_SERVER_ERROR)
+
+
+        let url = format!(
+            "{}/{}?contractChainId={}&contractAddress={}",
+            state.merkle_proof_service_base_url,
+            "range",
+            state.contract_chain_id,
+            state.contract_address
+        );
+
+        info!("url {}", url);
+
+        let response = state.request_client.get(url).send().await.map_err(|e| {
+            tracing::error!("❌ Cannot parse range blocks: {e:#}");
+            ErrorResponse::with_status_and_headers(
+                anyhow!("{e:#}"),
+                StatusCode::INTERNAL_SERVER_ERROR,
+                &[("Cache-Control", "public, max-age=60, must-revalidate")],
+            )
         })?;
 
-        info!("Timestamp: {}", timestamp);
+        let range_blocks = response
+            .json::<RangeBlocksAPIResponse>()
+            .await
+            .map_err(|e| {
+                tracing::error!("❌ Cannot parse range blocks: {e:#}");
+                ErrorResponse::with_status_and_headers(
+                    anyhow!("{e:#}"),
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    &[("Cache-Control", "public, max-age=60, must-revalidate")],
+                )
+            })?;
 
-        let claim_estimate = time_until_next_update(*timestamp).await;
+
+        let claim_estimate = remaining_time_seconds(avail_finalized_block as u64,range_blocks.data.end as u64,360,20);
         let mut avail_send: Vec<TransactionData> = Vec::new();
 
-        // TODO stats
         for r in rows {
             let mut estimate = None;
             if r.final_status != "bridged" {
                 estimate = Some(claim_estimate.as_secs());
             }
-
+            if r.final_status != "bridged" && r.final_status != "claim_ready" {
+                estimate = Some(claim_estimate.as_secs());
+            }
             let tx = TransactionData {
                 message_id: r.message_id,
                 sender: r.sender,
@@ -352,7 +390,7 @@ async fn transactions(
                 amount: r.amount,
                 status: r.final_status,
                 claim_estimate: estimate,
-                destination_block_number: r.block_height
+                destination_block_number: r.block_height,
             };
             avail_send.push(tx);
         }
@@ -360,14 +398,28 @@ async fn transactions(
         transaction_results.avail_send = avail_send;
     }
 
-
-
     Ok(Json(json!(transaction_results)))
 }
 
+fn remaining_time_seconds(
+    current_block: u64,
+    last_updated_block: u64,
+    blocks_per_update: u64,
+    block_time_seconds: u64,
+) -> Duration {
+    let blocks_since_update = current_block.saturating_sub(last_updated_block);
 
+    let blocks_remaining = blocks_per_update.saturating_sub(blocks_since_update);
 
-
+    Duration::from_secs(blocks_remaining * block_time_seconds)
+}
+#[test]
+fn test() {
+    let d = remaining_time_seconds(350, 50, 360, 20);
+    assert_eq!(1200, d.as_secs());
+    let d = remaining_time_seconds(100, 50, 360, 20);
+    assert_eq!(6200, d.as_secs());
+}
 
 
 async fn time_until_next_update(timestamp_s: u64) -> Duration {
@@ -885,7 +937,7 @@ async fn get_proof(
             ..
         }) => {
             if data.contains("not in the range of blocks") {
-                tracing::warn!("VectorX contract not updated yet! Response: {}", data);
+                warn!("VectorX contract not updated yet! Response: {}", data);
             } else {
                 tracing::error!(
                     "Merkle proof API returned unsuccessfully. Response: {}",

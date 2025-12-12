@@ -262,15 +262,15 @@ pub struct ChainHeadResponse {
 
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct RangeBlocks {
-    start: u32,
-    end: u32,
+pub struct RangeBlocks {
+    pub start: u32,
+    pub end: u32,
 }
 
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RangeBlocksAPIResponse {
-    data: RangeBlocks,
+    pub data: RangeBlocks,
 }
 
 #[derive(Debug, Deserialize)]
@@ -372,12 +372,12 @@ pub struct TransactionQueryParams {
 #[serde_as]
 #[serde(rename_all = "camelCase")]
 pub struct TransactionRow {
-    pub message_id: BigDecimal,
+    pub message_id: i64,
     pub sender: String,
     pub receiver: String,
     pub source_block_hash: String,
     pub source_transaction_hash: String,
-    pub amount: BigDecimal,
+    pub amount: String,
     pub final_status: String,
     pub block_height: i32,
 }
@@ -386,12 +386,12 @@ pub struct TransactionRow {
 #[serde_as]
 #[serde(rename_all = "camelCase")]
 pub struct TransactionData {
-    pub message_id: BigDecimal,
+    pub message_id: i64,
     pub sender: String,
     pub receiver: String,
     pub source_block_hash: String,
     pub source_transaction_hash: String,
-    pub amount: BigDecimal,
+    pub amount: String,
     pub status: String,
     #[serde(default)]
     pub claim_estimate: Option<u64>,
