@@ -204,6 +204,7 @@ async fn transactions(
 ) -> Result<impl IntoResponse, ErrorResponse> {
     info!("Transaction query: {:?}", address_query);
 
+    // check provided params
     if address_query.eth_address.is_none() && address_query.avail_address.is_none() {
         tracing::error!("Query params not provided.");
         return Err(ErrorResponse::with_status_and_headers(
@@ -213,50 +214,25 @@ async fn transactions(
         ));
     }
 
-    let avail_finalized_block: i32 = state
+    let avail_finalized_block: u32 = state
         .avail_client
         .request("chain_getFinalizedHead", rpc_params![])
         .await
-        .context("finalized head").unwrap_or(0);
-
+        .context("finalized head")
+        .unwrap_or(0);
 
     let mut transaction_results: TransactionResult = TransactionResult::default();
 
     if let Some(eth_address) = address_query.eth_address {
         let address: String = format!("{:?}", &address_query.eth_address.unwrap());
 
-        let rows: Vec<TransactionRow> = sqlx::query_as::<_, TransactionRow>(
-            r#"
-    SELECT
-        es.message_id,
-        es.sender,
-        es.receiver,
-        es.amount,
-        es.source_block_hash,
-        es.source_transaction_hash,
-        ai.block_height,
-        COALESCE(
-            CASE
-                WHEN es.status = 'in_progress' AND aet.message_id IS NULL THEN 'in_progress'
-                WHEN es.status = 'in_progress' AND aet.message_id IS NOT NULL THEN 'bridged'
-                ELSE es.status
-            END,
-            'in_progress'
-        ) AS final_status
-
-    FROM bridge_event es
-    LEFT JOIN public.avail_execute_table AS aet
-        ON es.message_id = aet.message_id
-    INNER JOIN public.avail_indexer ai on ai.id = aet.id
-    WHERE es.sender = $1
-        AND es.event_type = $2
-    ORDER BY es.message_id ASC limit 1000
-    "#,
-        )
-        .bind(address)
-        .bind("MessageSent")
-        .fetch_all(&state.db)
-        .await?;
+        // fetch sendAvail for ethereum and join with execute on avail
+        let rows: Vec<TransactionRow> =
+            sqlx::query_as::<_, TransactionRow>(include_str!("query_eth_tx.sql"))
+                .bind(address)
+                .bind("MessageSent")
+                .fetch_all(&state.db)
+                .await?;
 
         let slot_block_head = SLOT_BLOCK_HEAD.read().await;
         let (slot, block, hash, timestamp) = slot_block_head.as_ref().ok_or_else(|| {
@@ -268,29 +244,25 @@ async fn transactions(
 
         for mut r in rows {
             let mut estimate = None;
-
             if r.final_status != "bridged"
-                && r.final_status != "in_progress"
                 && r.block_height <= *block as i32
             {
                 r.final_status = "claim_ready".to_string();
-            }
-
-            if r.final_status != "bridged" && r.final_status != "claim_ready" {
+            } else if r.final_status != "bridged" && r.final_status != "claim_ready" {
                 estimate = Some(claim_estimate.as_secs());
             }
 
-            let tx = TransactionData {
-                message_id: r.message_id,
-                sender: r.sender,
-                receiver: r.receiver,
-                source_block_hash: r.source_block_hash,
-                source_transaction_hash: r.source_transaction_hash,
-                amount: r.amount,
-                status: r.final_status,
-                claim_estimate: estimate,
-                destination_block_number: r.block_height,
-            };
+            let tx = TransactionData::new(
+                r.message_id,
+                r.sender,
+                r.receiver,
+                r.source_block_hash,
+                r.source_transaction_hash,
+                r.amount,
+                r.final_status,
+                estimate,
+                r.block_height,
+            );
             eth_send.push(tx);
         }
 
@@ -298,55 +270,23 @@ async fn transactions(
     }
 
     if let Some(avail_address) = address_query.avail_address {
-        let rows: Vec<TransactionRow> = sqlx::query_as::<_, TransactionRow>(
-            r#"
-                    SELECT
-                ai1.id as message_id,
-                ai1.signature_address as sender,
-                es.to as receiver,
-                es.amount,
-                ai1.block_hash as source_block_hash,
-                ai1.ext_hash as source_transaction_hash,
-                ai1.block_height,
-                COALESCE(
-                CASE
-                WHEN aet.message_id IS NOT NULL THEN 'bridged'
-                END,
-                'in_progress'
-                ) AS final_status
-                FROM avail_send_message_table es
-                INNER JOIN public.avail_indexer AS ai1
-                ON ai1.id = es.id
-                LEFT JOIN public.bridge_event AS aet
-                ON es.id = aet.message_id
-                LEFT JOIN public.avail_indexer AS ai2
-                ON ai2.id = aet.message_id
-                WHERE ai1.signature_address = $1
-                AND aet.event_type = $3
-                AND ai1.ext_success = $4
-                AND es.type = $2
-                ORDER BY es.id ASC
-                LIMIT 1000;
-    "#,
-        )
-        .bind(avail_address)
-        .bind("FungibleToken")
-        .bind("MessageReceived")
-        .bind(true)
-        .fetch_all(&state.db)
-        .await?;
-
-
+        let rows: Vec<TransactionRow> =
+            sqlx::query_as::<_, TransactionRow>(include_str!("query_avail_tx.sql"))
+                .bind(avail_address)
+                .bind("FungibleToken")
+                .bind("MessageReceived")
+                .bind(true)
+                .fetch_all(&state.db)
+                .await?;
 
         let url = format!(
-            "{}/{}?contractChainId={}&contractAddress={}",
+            "{}/api/{}?chainName={}&contractChainId={}&contractAddress={}",
             state.merkle_proof_service_base_url,
             "range",
+            state.avail_chain_name,
             state.contract_chain_id,
             state.contract_address
         );
-
-        info!("url {}", url);
 
         let response = state.request_client.get(url).send().await.map_err(|e| {
             tracing::error!("❌ Cannot parse range blocks: {e:#}");
@@ -369,29 +309,30 @@ async fn transactions(
                 )
             })?;
 
-
-        let claim_estimate = remaining_time_seconds(avail_finalized_block as u64,range_blocks.data.end as u64,360,20);
+        let claim_estimate =
+            remaining_time_seconds(avail_finalized_block, range_blocks.data.end, 380, 20);
         let mut avail_send: Vec<TransactionData> = Vec::new();
 
-        for r in rows {
+        for mut r in rows {
             let mut estimate = None;
-            if r.final_status != "bridged" {
+
+            if r.final_status == "in_progress" && r.block_height < range_blocks.data.end as i32 {
+                r.final_status = "claim_ready".to_string();
+            } else if r.final_status != "claim_ready" || r.final_status != "bridged" {
                 estimate = Some(claim_estimate.as_secs());
             }
-            if r.final_status != "bridged" && r.final_status != "claim_ready" {
-                estimate = Some(claim_estimate.as_secs());
-            }
-            let tx = TransactionData {
-                message_id: r.message_id,
-                sender: r.sender,
-                receiver: r.receiver,
-                source_block_hash: r.source_block_hash,
-                source_transaction_hash: r.source_transaction_hash,
-                amount: r.amount,
-                status: r.final_status,
-                claim_estimate: estimate,
-                destination_block_number: r.block_height,
-            };
+
+            let tx = TransactionData::new(
+                r.message_id,
+                r.sender,
+                r.receiver,
+                r.source_block_hash,
+                r.source_transaction_hash,
+                r.amount,
+                r.final_status,
+                estimate,
+                r.block_height,
+            );
             avail_send.push(tx);
         }
 
@@ -402,16 +343,16 @@ async fn transactions(
 }
 
 fn remaining_time_seconds(
-    current_block: u64,
-    last_updated_block: u64,
-    blocks_per_update: u64,
-    block_time_seconds: u64,
+    current_block: u32,
+    last_updated_block: u32,
+    blocks_per_update: u32,
+    block_time_seconds: u32,
 ) -> Duration {
     let blocks_since_update = current_block.saturating_sub(last_updated_block);
 
     let blocks_remaining = blocks_per_update.saturating_sub(blocks_since_update);
 
-    Duration::from_secs(blocks_remaining * block_time_seconds)
+    Duration::from_secs((blocks_remaining * block_time_seconds) as u64)
 }
 #[test]
 fn test() {
@@ -420,7 +361,6 @@ fn test() {
     let d = remaining_time_seconds(100, 50, 360, 20);
     assert_eq!(6200, d.as_secs());
 }
-
 
 async fn time_until_next_update(timestamp_s: u64) -> Duration {
     let now_ms = Utc::now().timestamp_millis() as u64;
