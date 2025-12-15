@@ -333,8 +333,10 @@ pub struct TransactionData {
     pub source_transaction_hash: String,
     pub amount: String,
     pub status: BridgeStatusEnum,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub claim_estimate: Option<u64>,
     pub destination_block_number: i32,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub tx_index: Option<i32>,
 }
 
