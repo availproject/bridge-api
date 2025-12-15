@@ -224,18 +224,15 @@ async fn transactions(
     let mut transaction_results: TransactionResult = TransactionResult::default();
 
     if let Some(eth_address) = address_query.eth_address {
-        let address: String = format!("{:?}", &address_query.eth_address.unwrap());
-
-        // fetch sendAvail for ethereum and join with execute on avail
         let rows: Vec<TransactionRow> =
             sqlx::query_as::<_, TransactionRow>(include_str!("query_eth_tx.sql"))
-                .bind(address)
+                .bind(format!("{:?}", eth_address))
                 .bind("MessageSent")
                 .fetch_all(&state.db)
                 .await?;
 
         let slot_block_head = SLOT_BLOCK_HEAD.read().await;
-        let (slot, block, hash, timestamp) = slot_block_head.as_ref().ok_or_else(|| {
+        let (_slot, block, _hash, timestamp) = slot_block_head.as_ref().ok_or_else(|| {
             ErrorResponse::with_status(anyhow!("Not found"), StatusCode::INTERNAL_SERVER_ERROR)
         })?;
 
@@ -244,11 +241,11 @@ async fn transactions(
 
         for mut r in rows {
             let mut estimate = None;
-            if r.final_status != "bridged"
+            if r.final_status != BridgeStatusEnum::Bridged
                 && r.block_height <= *block as i32
             {
-                r.final_status = "claim_ready".to_string();
-            } else if r.final_status != "bridged" && r.final_status != "claim_ready" {
+                r.final_status = BridgeStatusEnum::ClaimReady
+            } else if r.final_status != BridgeStatusEnum::Bridged && r.final_status != BridgeStatusEnum::ClaimReady {
                 estimate = Some(claim_estimate.as_secs());
             }
 
@@ -316,9 +313,9 @@ async fn transactions(
         for mut r in rows {
             let mut estimate = None;
 
-            if r.final_status == "in_progress" && r.block_height < range_blocks.data.end as i32 {
-                r.final_status = "claim_ready".to_string();
-            } else if r.final_status != "claim_ready" || r.final_status != "bridged" {
+            if r.final_status == BridgeStatusEnum::InProgress && r.block_height < range_blocks.data.end as i32 {
+                r.final_status = BridgeStatusEnum::ClaimReady;
+            } else if r.final_status != BridgeStatusEnum::ClaimReady || r.final_status != BridgeStatusEnum::Bridged {
                 estimate = Some(claim_estimate.as_secs());
             }
 

@@ -8,11 +8,11 @@ SELECT
     ai.block_height,
     COALESCE(
             CASE
-                WHEN es.status = 'in_progress' AND aet.message_id IS NULL THEN 'in_progress'
-                WHEN es.status = 'in_progress' AND aet.message_id IS NOT NULL THEN 'bridged'
+                WHEN es.status = 'in_progress' AND aet.message_id IS NULL THEN 'in_progress'::status
+                WHEN es.status = 'in_progress' AND aet.message_id IS NOT NULL THEN 'bridged'::status
                 ELSE es.status
                 END,
-            'in_progress'
+            'in_progress'::status
     ) AS final_status
 
 FROM bridge_event es
@@ -21,4 +21,4 @@ FROM bridge_event es
          INNER JOIN public.avail_indexer ai on ai.id = aet.id
 WHERE es.sender = $1
   AND es.event_type = $2
-ORDER BY es.message_id ASC limit 1000
+ORDER BY es.message_id DESC limit 1000

@@ -8,9 +8,9 @@ SELECT
     ai1.block_height,
     COALESCE(
             CASE
-                WHEN aet.message_id IS NOT NULL THEN 'bridged'
+                WHEN aet.message_id IS NOT NULL THEN 'bridged'::status
                 END,
-            'in_progress'
+            'in_progress'::status
     ) AS final_status
 FROM avail_send_message_table es
          INNER JOIN public.avail_indexer AS ai1
@@ -23,5 +23,5 @@ WHERE ai1.signature_address = $1
   AND aet.event_type = $3
   AND ai1.ext_success = $4
   AND es.type = $2
-ORDER BY es.id ASC
+ORDER BY es.id DESC
 LIMIT 1000;

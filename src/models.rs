@@ -10,7 +10,7 @@ use jsonrpsee::core::Serialize;
 use serde::{Deserialize, Deserializer};
 use serde_json::json;
 use serde_with::serde_as;
-use sp_core::{H160, H256};
+use sp_core::{H160};
 use sqlx::types::BigDecimal;
 use sqlx::{FromRow, Type};
 
@@ -287,79 +287,19 @@ where
     u32::from_str_radix(s.trim_start_matches("0x"), 16).map_err(serde::de::Error::custom)
 }
 
-#[derive(Debug, Serialize, Deserialize, Type)]
+#[derive(Debug, PartialEq, Serialize, Deserialize)]
 #[sqlx(type_name = "status")]
-pub enum StatusEnum {
+#[derive(sqlx::Type)]
+pub enum BridgeStatusEnum {
     #[sqlx(rename = "initiated")]
     Initialized,
     #[sqlx(rename = "in_progress")]
     InProgress,
     #[sqlx(rename = "claim_ready")]
-    ClaimPending,
+    ClaimReady,
     #[sqlx(rename = "bridged")]
     Bridged,
 }
-
-// impl ToSql<Status, Pg> for StatusEnum {
-//     fn to_sql<'b>(&'b self, out: &mut Output<'b, '_, Pg>) -> serialize::Result {
-//         match *self {
-//             StatusEnum::InProgress => out.write_all(b"IN_PROGRESS")?,
-//             StatusEnum::ClaimPending => out.write_all(b"CLAIM_PENDING")?,
-//             StatusEnum::Bridged => out.write_all(b"BRIDGED")?,
-//         }
-//         Ok(IsNull::No)
-//     }
-// }
-//
-// impl FromSql<Status, Pg> for StatusEnum {
-//     fn from_sql(bytes: PgValue<'_>) -> deserialize::Result<Self> {
-//         match bytes.as_bytes() {
-//             b"IN_PROGRESS" => Ok(StatusEnum::InProgress),
-//             b"CLAIM_PENDING" => Ok(StatusEnum::ClaimPending),
-//             b"BRIDGED" => Ok(StatusEnum::Bridged),
-//             _ => Err(format!(
-//                 "Unrecognized enum variant {}",
-//                 std::str::from_utf8(bytes.as_bytes()).unwrap()
-//             )
-//             .as_str()
-//             .into()),
-//         }
-//     }
-// }
-
-pub struct AvailSend {
-    pub message_id: i64,
-    pub status: StatusEnum,
-    pub source_transaction_hash: String,
-    pub source_block_number: i64,
-    pub source_block_hash: String,
-    pub source_transaction_index: i64,
-    pub source_timestamp: NaiveDateTime,
-    pub token_id: String,
-    pub destination_block_number: Option<i64>,
-    pub destination_block_hash: Option<String>,
-    pub destination_timestamp: Option<NaiveDateTime>,
-    pub depositor_address: String,
-
-    pub amount: String,
-}
-
-// pub struct EthereumSend {
-//     pub message_id: i64,
-//     pub status: StatusEnum,
-//     pub source_transaction_hash: String,
-//     pub source_block_number: i64,
-//     pub source_block_hash: String,
-//     pub source_timestamp: NaiveDateTime,
-//     pub token_id: String,
-//     pub destination_block_number: Option<i64>,
-//     pub destination_block_hash: Option<String>,
-//     pub destination_transaction_index: Option<i64>,
-//     pub destination_timestamp: Option<NaiveDateTime>,
-//     pub depositor_address: String,
-//     pub receiver_address: String,
-//     pub amount: String,
-// }
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -378,7 +318,7 @@ pub struct TransactionRow {
     pub source_block_hash: String,
     pub source_transaction_hash: String,
     pub amount: String,
-    pub final_status: String,
+    pub final_status: BridgeStatusEnum,
     pub block_height: i32,
 }
 
@@ -392,7 +332,7 @@ pub struct TransactionData {
     pub source_block_hash: String,
     pub source_transaction_hash: String,
     pub amount: String,
-    pub status: String,
+    pub status: BridgeStatusEnum,
     #[serde(default)]
     pub claim_estimate: Option<u64>,
     pub destination_block_number: i32,
@@ -406,7 +346,7 @@ impl TransactionData {
         source_block_hash: String,
         source_transaction_hash: String,
         amount: String,
-        status: String,
+        status: BridgeStatusEnum,
         claim_estimate: Option<u64>,
         destination_block_number: i32,
     ) -> Self {
@@ -429,47 +369,6 @@ pub struct TransactionResult {
     pub avail_send: Vec<TransactionData>,
     pub eth_send: Vec<TransactionData>,
 }
-
-// pub fn map_ethereum_send_to_transaction_result(send: EthereumSend) -> TransactionData {
-//     TransactionData {
-//         message_id: send.message_id,
-//         status: send.status,
-//         source_transaction_hash: send.source_transaction_hash,
-//         source_block_number: send.source_block_number,
-//         source_block_hash: send.source_block_hash,
-//         source_transaction_index: None,
-//         source_timestamp: send.source_timestamp,
-//         token_id: send.token_id,
-//         destination_block_number: send.destination_block_number,
-//         destination_block_hash: send.destination_block_hash,
-//         destination_transaction_index: send.destination_transaction_index,
-//         destination_timestamp: send.destination_timestamp,
-//         depositor_address: send.depositor_address,
-//         receiver_address: send.receiver_address,
-//         amount: send.amount,
-//     }
-// }
-
-// Function to map AvailSend to TransactionResult
-// pub fn map_avail_send_to_transaction_result(send: AvailSend) -> TransactionData {
-//     TransactionData {
-//         message_id: send.message_id,
-//         status: send.status,
-//         source_transaction_hash: send.source_transaction_hash,
-//         source_block_number: send.source_block_number,
-//         source_block_hash: send.source_block_hash,
-//         source_transaction_index: Some(send.source_transaction_index),
-//         source_timestamp: send.source_timestamp,
-//         token_id: send.token_id,
-//         destination_block_number: send.destination_block_number,
-//         destination_block_hash: send.destination_block_hash,
-//         destination_transaction_index: None,
-//         destination_timestamp: send.destination_timestamp,
-//         depositor_address: send.depositor_address,
-//         receiver_address: send.receiver_address,
-//         amount: send.amount,
-//     }
-// }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
