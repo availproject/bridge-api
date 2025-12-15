@@ -6,6 +6,7 @@ SELECT
     ai1.block_hash as source_block_hash,
     ai1.ext_hash as source_transaction_hash,
     ai1.block_height,
+    ai1.ext_index,
     COALESCE(
             CASE
                 WHEN aet.message_id IS NOT NULL THEN 'bridged'::status

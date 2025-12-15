@@ -13,8 +13,8 @@ SELECT
                 ELSE es.status
                 END,
             'in_progress'::status
-    ) AS final_status
-
+    ) AS final_status,
+    NULL::integer   AS ext_index
 FROM bridge_event es
          LEFT JOIN public.avail_execute_table AS aet
                    ON es.message_id = aet.message_id

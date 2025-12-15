@@ -18,7 +18,7 @@ use axum::{
 };
 use backon::ExponentialBuilder;
 use backon::Retryable;
-use chrono::Utc;
+use chrono::{Utc};
 use sp_core::hexdisplay::AsBytesRef;
 
 use alloy::core::sol;
@@ -39,6 +39,7 @@ use sp_core::Decode;
 use sp_io::hashing::twox_128;
 use sqlx::{PgPool, query};
 use std::collections::HashMap;
+use std::ops::Sub;
 use std::str::FromStr;
 use std::sync::Arc;
 use std::{env, process, time::Duration};
@@ -53,6 +54,7 @@ use tower_http::{
 };
 use tracing::{info, warn};
 use tracing_subscriber::prelude::*;
+use crate::models::TxDirection::{AvailEth, EthAvail};
 
 sol! {
     #[derive(Debug)]
@@ -88,6 +90,8 @@ pub struct AppState {
     pub transactions_cache_maxage: u32,
     pub db: PgPool,
     pub chains: HashMap<u64, Chain>,
+    pub helios_update_frequency: u32,
+    pub vector_update_frequency: u32,
 }
 
 async fn alive() -> Result<Json<Value>, StatusCode> {
@@ -161,9 +165,10 @@ async fn transaction(
                             sender,
                             receiver,
                             amount,
-                            block_hash
+                            source_block_hash,
+                            source_transaction_hash
                             ) VALUES(
-                                  $1, $2, $3, $4, $5, $6, $7)",
+                                  $1, $2, $3, $4, $5, $6, $7, $8)",
     )
     .bind(message_id)
     .bind("MessageSent")
@@ -172,6 +177,7 @@ async fn transaction(
     .bind(recipient)
     .bind(BigDecimal::from(av))
     .bind(tx.block_hash)
+    .bind(tx.hash)
     .execute(&state.db)
     .await
     .map_err(|e| {
@@ -221,7 +227,7 @@ async fn transactions(
         .context("finalized head")
         .unwrap_or(0);
 
-    let mut transaction_results: TransactionResult = TransactionResult::default();
+    let mut transaction_results: Vec<TransactionData> = vec![];
 
     if let Some(eth_address) = address_query.eth_address {
         let rows: Vec<TransactionRow> =
@@ -236,20 +242,20 @@ async fn transactions(
             ErrorResponse::with_status(anyhow!("Not found"), StatusCode::INTERNAL_SERVER_ERROR)
         })?;
 
-        let claim_estimate = time_until_next_update(*timestamp).await;
-        let mut eth_send: Vec<TransactionData> = Vec::new();
+        let claim_estimate = time_until_next_helios_update(*timestamp, state.helios_update_frequency);
 
         for mut r in rows {
             let mut estimate = None;
-            if r.final_status != BridgeStatusEnum::Bridged
-                && r.block_height <= *block as i32
-            {
+            if r.final_status != BridgeStatusEnum::Bridged && r.block_height <= *block as i32 {
                 r.final_status = BridgeStatusEnum::ClaimReady
-            } else if r.final_status != BridgeStatusEnum::Bridged && r.final_status != BridgeStatusEnum::ClaimReady {
+            } else if r.final_status != BridgeStatusEnum::Bridged
+                && r.final_status != BridgeStatusEnum::ClaimReady
+            {
                 estimate = Some(claim_estimate.as_secs());
             }
 
             let tx = TransactionData::new(
+                EthAvail,
                 r.message_id,
                 r.sender,
                 r.receiver,
@@ -259,11 +265,10 @@ async fn transactions(
                 r.final_status,
                 estimate,
                 r.block_height,
+                None
             );
-            eth_send.push(tx);
+            transaction_results.push(tx);
         }
-
-        transaction_results.eth_send = eth_send;
     }
 
     if let Some(avail_address) = address_query.avail_address {
@@ -306,20 +311,29 @@ async fn transactions(
                 )
             })?;
 
-        let claim_estimate =
-            remaining_time_seconds(avail_finalized_block, range_blocks.data.end, 380, 20);
-        let mut avail_send: Vec<TransactionData> = Vec::new();
+        let claim_estimate = remaining_time_seconds(
+            avail_finalized_block,
+            range_blocks.data.end,
+            state.vector_update_frequency,
+            20,
+        );
+        let avail_send: Vec<TransactionData> = Vec::new();
 
         for mut r in rows {
             let mut estimate = None;
 
-            if r.final_status == BridgeStatusEnum::InProgress && r.block_height < range_blocks.data.end as i32 {
+            if r.final_status == BridgeStatusEnum::InProgress
+                && r.block_height < range_blocks.data.end as i32
+            {
                 r.final_status = BridgeStatusEnum::ClaimReady;
-            } else if r.final_status != BridgeStatusEnum::ClaimReady || r.final_status != BridgeStatusEnum::Bridged {
+            } else if r.final_status == BridgeStatusEnum::Initialized ||
+                r.final_status == BridgeStatusEnum::InProgress
+            {
                 estimate = Some(claim_estimate.as_secs());
             }
 
             let tx = TransactionData::new(
+                AvailEth,
                 r.message_id,
                 r.sender,
                 r.receiver,
@@ -329,11 +343,11 @@ async fn transactions(
                 r.final_status,
                 estimate,
                 r.block_height,
+                r.ext_index,
             );
-            avail_send.push(tx);
-        }
 
-        transaction_results.avail_send = avail_send;
+            transaction_results.push(tx);
+        }
     }
 
     Ok(Json(json!(transaction_results)))
@@ -346,113 +360,18 @@ fn remaining_time_seconds(
     block_time_seconds: u32,
 ) -> Duration {
     let blocks_since_update = current_block.saturating_sub(last_updated_block);
-
     let blocks_remaining = blocks_per_update.saturating_sub(blocks_since_update);
 
     Duration::from_secs((blocks_remaining * block_time_seconds) as u64)
 }
-#[test]
-fn test() {
-    let d = remaining_time_seconds(350, 50, 360, 20);
-    assert_eq!(1200, d.as_secs());
-    let d = remaining_time_seconds(100, 50, 360, 20);
-    assert_eq!(6200, d.as_secs());
+
+fn time_until_next_helios_update(timestamp_ms: u64, heliso_update_frequency: u32) -> Duration {
+    let now = Utc::now().timestamp() as u64;
+    let time_since_update = now - timestamp_ms;
+    let update_frequency = Duration::from_secs(heliso_update_frequency as u64).as_secs();
+    let remaining = update_frequency.saturating_sub(time_since_update);
+    Duration::from_secs(remaining)
 }
-
-async fn time_until_next_update(timestamp_s: u64) -> Duration {
-    let now_ms = Utc::now().timestamp_millis() as u64;
-
-    let last_update_ms = Duration::from_secs(timestamp_s).as_millis() as u64;
-
-    // elapsed time in milliseconds
-    let elapsed_ms = now_ms.saturating_sub(last_update_ms);
-
-    let update_frequency_ms: u64 = 60 * 60 * 1000; // 1 hour in ms
-
-    // remaining time, 0 if already past the interval
-    let remaining_ms = update_frequency_ms.saturating_sub(elapsed_ms);
-
-    Duration::from_millis(remaining_ms)
-}
-
-// if address_query.eth_address.is_none() && address_query.avail_address.is_none() {
-//     tracing::error!("Query params not provided.");
-//     return Err(ErrorResponse::with_status_and_headers(
-//         anyhow!("Invalid request: Query params not provided"),
-//         StatusCode::BAD_REQUEST,
-//         &[("Cache-Control", "max-age=60, must-revalidate")],
-//     ));
-// }
-//
-// let cloned_state = state.clone();
-// let mut conn = cloned_state
-//     .connection_pool
-//     .get_timeout(Duration::from_secs(1))
-//     .expect("Get connection pool");
-//
-// // Initialize the result variables
-// let mut transaction_results: TransactionResult = TransactionResult::default();
-//
-// // Return the combined results
-// if let Some(eth_address) = address_query.eth_address {
-//     let ethereum_sends_results = ethereum_sends
-//         .select(EthereumSend::as_select())
-//         .filter(schema::ethereum_sends::depositor_address.eq(format!("{:?}", eth_address)))
-//         .order_by(schema::ethereum_sends::source_timestamp.desc())
-//         .limit(500)
-//         .load::<EthereumSend>(&mut conn);
-//
-//     transaction_results.eth_send = ethereum_sends_results
-//         .map_err(|e| {
-//             tracing::error!("Cannot get ethereum send transactions:: {e:#}");
-//             ErrorResponse::with_status_and_headers(
-//                 e.into(),
-//                 StatusCode::INTERNAL_SERVER_ERROR,
-//                 &[("Cache-Control", "public, max-age=60, must-revalidate")],
-//             )
-//         })?
-//         .into_iter()
-//         .map(map_ethereum_send_to_transaction_result)
-//         .collect();
-// }
-//
-// if let Some(avail_address) = address_query.avail_address {
-//     let avail_sends_results = avail_sends
-//         .select(AvailSend::as_select())
-//         .filter(schema::avail_sends::depositor_address.eq(format!("{:?}", avail_address)))
-//         .order_by(schema::avail_sends::source_timestamp.desc())
-//         .limit(500)
-//         .load::<AvailSend>(&mut conn);
-//
-//     transaction_results.avail_send = avail_sends_results
-//         .map_err(|e| {
-//             tracing::error!("Cannot get avail send transactions: {e:#}");
-//             ErrorResponse::with_status_and_headers(
-//                 e.into(),
-//                 StatusCode::INTERNAL_SERVER_ERROR,
-//                 &[("Cache-Control", "public, max-age=60, must-revalidate")],
-//             )
-//         })?
-//         .into_iter()
-//         .map(map_avail_send_to_transaction_result)
-//         .collect();
-// }
-//
-// Ok((
-//     StatusCode::OK,
-//     [(
-//         "Cache-Control",
-//         format!(
-//             "public, max-age={}, immutable",
-//             state.transactions_cache_maxage
-//         ),
-//     )],
-//     Json(json!(transaction_results)),
-// )
-//     .into_response())
-
-//     Ok(())
-// }
 
 #[inline(always)]
 async fn get_eth_proof(
@@ -1090,6 +1009,14 @@ async fn main() {
             .unwrap_or(60),
         db,
         chains,
+        helios_update_frequency: env::var("HELIOS_UPDATE_FREQUENCY")
+            .ok()
+            .and_then(|helios_update_frequency| helios_update_frequency.parse::<u32>().ok())
+            .unwrap_or(3600),
+        vector_update_frequency: env::var("VECTOR_UPDATE_FREQUENCY")
+            .ok()
+            .and_then(|vector_update_frequency| vector_update_frequency.parse::<u32>().ok())
+            .unwrap_or(360),
     });
 
     let app = Router::new()
@@ -1252,4 +1179,19 @@ async fn track_slot_avail_task(state: Arc<AppState>) -> Result<()> {
     do_work.retry(&retry_settings).await?;
 
     Ok(())
+}
+
+#[test]
+fn test_remaining_time_for_vector_update() {
+    let d = remaining_time_seconds(350, 50, 360, 20);
+    assert_eq!(1200, d.as_secs());
+    let d = remaining_time_seconds(100, 50, 360, 20);
+    assert_eq!(6200, d.as_secs());
+}
+
+#[test]
+fn test_remaining_time_for_helios_update() {
+    let update = Utc::now().timestamp() - 1200;
+    let remaining = time_until_next_helios_update(update as u64);
+    assert_eq!(2400, remaining.as_secs());
 }

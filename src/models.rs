@@ -3,7 +3,6 @@ use alloy::sol;
 use avail_core::data_proof::AddressedMessage;
 use axum::Json;
 use axum::response::{IntoResponse, Response};
-use chrono::NaiveDateTime;
 
 use http::{HeaderMap, HeaderName, HeaderValue, StatusCode};
 use jsonrpsee::core::Serialize;
@@ -11,8 +10,7 @@ use serde::{Deserialize, Deserializer};
 use serde_json::json;
 use serde_with::serde_as;
 use sp_core::{H160};
-use sqlx::types::BigDecimal;
-use sqlx::{FromRow, Type};
+use sqlx::{FromRow};
 
 sol!(
     #[allow(missing_docs)]
@@ -182,13 +180,6 @@ pub struct MekrleProofAPIResponse {
     pub success: Option<bool>,
 }
 
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SlotMappingResponse {
-    pub block_hash: String,
-    pub block_number: String,
-}
-
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MerkleProofData {
@@ -288,8 +279,8 @@ where
 }
 
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
-#[sqlx(type_name = "status")]
 #[derive(sqlx::Type)]
+#[sqlx(type_name = "status")]
 pub enum BridgeStatusEnum {
     #[sqlx(rename = "initiated")]
     Initialized,
@@ -320,12 +311,21 @@ pub struct TransactionRow {
     pub amount: String,
     pub final_status: BridgeStatusEnum,
     pub block_height: i32,
+    pub ext_index: Option<i32>,
+}
+
+
+#[derive(Debug, Serialize, Deserialize)]
+pub enum TxDirection {
+    AvailEth,
+    EthAvail
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde_as]
 #[serde(rename_all = "camelCase")]
 pub struct TransactionData {
+    pub direction: TxDirection,
     pub message_id: i64,
     pub sender: String,
     pub receiver: String,
@@ -333,13 +333,14 @@ pub struct TransactionData {
     pub source_transaction_hash: String,
     pub amount: String,
     pub status: BridgeStatusEnum,
-    #[serde(default)]
     pub claim_estimate: Option<u64>,
     pub destination_block_number: i32,
+    pub tx_index: Option<i32>,
 }
 
 impl TransactionData {
     pub fn new(
+        direction: TxDirection,
         message_id: i64,
         sender: String,
         receiver: String,
@@ -349,8 +350,10 @@ impl TransactionData {
         status: BridgeStatusEnum,
         claim_estimate: Option<u64>,
         destination_block_number: i32,
+        tx_index: Option<i32>,
     ) -> Self {
         Self {
+            direction,
             message_id,
             sender,
             receiver,
@@ -360,6 +363,7 @@ impl TransactionData {
             status,
             claim_estimate,
             destination_block_number,
+            tx_index,
         }
     }
 }
