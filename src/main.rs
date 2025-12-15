@@ -18,9 +18,10 @@ use axum::{
 };
 use backon::ExponentialBuilder;
 use backon::Retryable;
-use chrono::{Utc};
+use chrono::Utc;
 use sp_core::hexdisplay::AsBytesRef;
 
+use crate::models::TxDirection::{AvailEth, EthAvail};
 use alloy::core::sol;
 use alloy::rpc::types::TransactionReceipt;
 use bigdecimal::BigDecimal;
@@ -54,7 +55,6 @@ use tower_http::{
 };
 use tracing::{info, warn};
 use tracing_subscriber::prelude::*;
-use crate::models::TxDirection::{AvailEth, EthAvail};
 
 sol! {
     #[derive(Debug)]
@@ -166,17 +166,19 @@ async fn transaction(
                             receiver,
                             amount,
                             source_block_hash,
+                            block_number,
                             source_transaction_hash
                             ) VALUES(
-                                  $1, $2, $3, $4, $5, $6, $7, $8)",
+                                  $1, $2, $3, $4, $5, $6, $7, $8, $9)",
     )
     .bind(message_id)
     .bind("MessageSent")
-    .bind("Initialized")
+    .bind(BridgeStatusEnum::Initialized)
     .bind(tx.from)
     .bind(recipient)
     .bind(BigDecimal::from(av))
     .bind(tx.block_hash)
+    .bind(tx.block_number as i32)
     .bind(tx.hash)
     .execute(&state.db)
     .await
@@ -242,7 +244,8 @@ async fn transactions(
             ErrorResponse::with_status(anyhow!("Not found"), StatusCode::INTERNAL_SERVER_ERROR)
         })?;
 
-        let claim_estimate = time_until_next_helios_update(*timestamp, state.helios_update_frequency);
+        let claim_estimate =
+            time_until_next_helios_update(*timestamp, state.helios_update_frequency);
 
         for mut r in rows {
             let mut estimate = None;
@@ -265,7 +268,7 @@ async fn transactions(
                 r.final_status,
                 estimate,
                 r.block_height,
-                None
+                None,
             );
             transaction_results.push(tx);
         }
@@ -326,8 +329,8 @@ async fn transactions(
                 && r.block_height < range_blocks.data.end as i32
             {
                 r.final_status = BridgeStatusEnum::ClaimReady;
-            } else if r.final_status == BridgeStatusEnum::Initialized ||
-                r.final_status == BridgeStatusEnum::InProgress
+            } else if r.final_status == BridgeStatusEnum::Initialized
+                || r.final_status == BridgeStatusEnum::InProgress
             {
                 estimate = Some(claim_estimate.as_secs());
             }
