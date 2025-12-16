@@ -38,9 +38,8 @@ use serde_json::{Value, json};
 use sha3::{Digest, Keccak256};
 use sp_core::Decode;
 use sp_io::hashing::twox_128;
-use sqlx::{PgPool, query};
+use sqlx::PgPool;
 use std::collections::HashMap;
-use std::ops::Sub;
 use std::str::FromStr;
 use std::sync::Arc;
 use std::{env, process, time::Duration};
@@ -157,34 +156,35 @@ async fn transaction(
     let AvailBridgeEvents::MessageSent(call) = decoded.data;
     let message_id: i64 = call.messageId.try_into()?;
 
-    query(
-        "INSERT INTO bridge_event (
-                            message_id,
-                            event_type,
-                            status,
-                            sender,
-                            receiver,
-                            amount,
-                            source_block_hash,
-                            block_number,
-                            source_transaction_hash
-                            ) VALUES(
-                                  $1, $2, $3, $4, $5, $6, $7, $8, $9)",
+    sqlx::query!(
+        r#"
+    INSERT INTO bridge_event (
+        message_id,
+        event_type,
+        status,
+        sender,
+        receiver,
+        amount,
+        source_block_hash,
+        block_number,
+        source_transaction_hash
+    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+    "#,
+        message_id,
+        "MessageSent",
+        BridgeStatusEnum::Initiated as BridgeStatusEnum, // cast if needed
+        tx.from,
+        recipient,
+        BigDecimal::from(av).to_string(),
+        tx.block_hash,
+        tx.block_number as i32,
+        tx.hash
     )
-    .bind(message_id)
-    .bind("MessageSent")
-    .bind(BridgeStatusEnum::Initiated)
-    .bind(tx.from)
-    .bind(recipient)
-    .bind(BigDecimal::from(av))
-    .bind(tx.block_hash)
-    .bind(tx.block_number as i32)
-    .bind(tx.hash)
     .execute(&state.db)
     .await
     .map_err(|e| {
         warn!("Cannot insert tx {}", e);
-        return anyhow!("Cannot insert tx");
+        anyhow!("Cannot insert tx")
     })?;
 
     Ok(())
@@ -232,12 +232,14 @@ async fn transactions(
     let mut transaction_results: Vec<TransactionData> = vec![];
 
     if let Some(eth_address) = address_query.eth_address {
-        let rows: Vec<TransactionRow> =
-            sqlx::query_as::<_, TransactionRow>(include_str!("query_eth_tx.sql"))
-                .bind(format!("{:?}", eth_address))
-                .bind("MessageSent")
-                .fetch_all(&state.db)
-                .await?;
+        let rows: Vec<TransactionRow> = sqlx::query_file_as!(
+            TransactionRow,
+            "sql/query_eth_tx.sql",
+            format!("{:?}", eth_address),
+            "MessageSent"
+        )
+        .fetch_all(&state.db)
+        .await?;
 
         let slot_block_head = SLOT_BLOCK_HEAD.read().await;
         let (_slot, block, _hash, timestamp) = slot_block_head.as_ref().ok_or_else(|| {
@@ -275,14 +277,16 @@ async fn transactions(
     }
 
     if let Some(avail_address) = address_query.avail_address {
-        let rows: Vec<TransactionRow> =
-            sqlx::query_as::<_, TransactionRow>(include_str!("query_avail_tx.sql"))
-                .bind(avail_address)
-                .bind("FungibleToken")
-                .bind("MessageReceived")
-                .bind(true)
-                .fetch_all(&state.db)
-                .await?;
+        let rows: Vec<TransactionRow> = sqlx::query_file_as!(
+            TransactionRow,
+            "sql/query_avail_tx.sql",
+            avail_address,
+            "FungibleToken",
+            "MessageReceived",
+            true
+        )
+        .fetch_all(&state.db)
+        .await?;
 
         let url = format!(
             "{}/api/{}?chainName={}&contractChainId={}&contractAddress={}",
