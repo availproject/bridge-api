@@ -302,54 +302,40 @@ RUSTFLAGS="-C target-cpu=native" cargo run --profile maxperf
 
     * Request
 
-      `GET /v1/transactions?availAddress=0x1a985fdff5f6eee4afce1dc0f367ab925cdca57e7e8585329830fc3ce6ef4e7a&ethAddress=0x48e7e157cf873c15a5a6734ea37c000e1cb2383d`
+      `GET /v2/transactions?availAddress=0x1a985fdff5f6eee4afce1dc0f367ab925cdca57e7e8585329830fc3ce6ef4e7a&ethAddress=0x48e7e157cf873c15a5a6734ea37c000e1cb2383d`
 
       ```bash
-      # curl <endpoint URL>/v1/transactions?ethAddress=<availAddress>&ethAddress=<ethAddress>
-      curl localhost:8080/v1/transactions?availAddress=0x1a985fdff5f6eee4afce1dc0f367ab925cdca57e7e8585329830fc3ce6ef4e7a&ethAddress=0x48e7e157cf873c15a5a6734ea37c000e1cb2383d
+      # curl <endpoint URL>/v2/transactions?ethAddress=<availAddress>&ethAddress=<ethAddress>
+      curl localhost:8080/v2/transactions?availAddress=0x1a985fdff5f6eee4afce1dc0f367ab925cdca57e7e8585329830fc3ce6ef4e7a&ethAddress=0x48e7e157cf873c15a5a6734ea37c000e1cb2383d
       ```
 
     * Response
 
       ```json
-      {
-        "availSend": [
-            {
-              "amount": "10000000000000000",
-              "depositorAddress": "0x1a985fdff5f6eee4afce1dc0f367ab925cdca57e7e8585329830fc3ce6ef4e7a",
-              "destinationBlockHash": null,
-              "destinationBlockNumber": null,
-              "destinationTimestamp": null,
-              "messageId": 106695577567233,
-              "receiverAddress": "0x8d31529525f23b14767d4dde78567ca083d3d56f",
-              "sourceBlockHash": "0x9cd91b1bd5497d96a98cf20e1563df29d85b8444d906a64a40980629e1288d70",
-              "sourceBlockNumber": 24842,
-              "sourceTimestamp": "2024-04-23T08:15:40",
-              "sourceTransactionHash": "0x9cd91b1bd5497d96a98cf20e1563df29d85b8444d906a64a40980629e1288d70",
-              "sourceTransactionIndex": 1,
-              "status": "claimPending",
-              "tokenId": "0x0000000000000000000000000000000000000000000000000000000000000000"
-            }
-          ],
-         "ethSend": [
-            {
-              "amount": "10000000000000000",
-              "depositorAddress": "0x48e7e157cf873c15a5a6734ea37c000e1cb2383d",
-              "destinationBlockHash": "0xb52bdaf649c84fdccdf2e18aac13e18b0a67ceca11e23bfb94e6476cab23eb38",
-              "destinationBlockNumber": 22650,
-              "destinationTimestamp": "2024-04-22T20:03:40",
-              "destinationTransactionIndex": 1,
-              "messageId": 311,
-              "receiverAddress": "0x1a985fdff5f6eee4afce1dc0f367ab925cdca57e7e8585329830fc3ce6ef4e7a",
-              "sourceBlockHash": "0x463b0853f65f7a80c4c8ca188c37eb9589fb42cfe327bc1736ce02245bc045e8",
-              "sourceBlockNumber": 5755158,
-              "sourceTimestamp": "2024-04-22T19:40:24",
-              "sourceTransactionHash": "0xcf7945f68d7544a81eb8c32a794e97e229da3535aebd5488a4404f0a1093f29c",
-              "status": "bridged",
-              "tokenId": "0x0000000000000000000000000000000000000000000000000000000000000000"
-            }
-          ]
+      [
+        {
+          "amount": "230000000000000000000000",
+          "destinationBlockNumber": 1815039,
+          "direction": "EthAvail",
+          "messageId": 1717,
+          "receiver": "0xc2b6ddd8382bcb813753562adb3d30cda40369750401b195dbabc6ac9bce620c",
+          "sender": "0xc1b2aff52877b4a23422f554f3d240be50ec80cf",
+          "sourceBlockHash": "0x8de5e002e1508780075a27c94fd4ef802899fb8adf0fb6a91c054e20a7ba41fd",
+          "sourceTransactionHash": "0x8900d0483699fde57a13451d86130b3632946a0883936f9fb831914f18f643fb",
+          "status": "Bridged"
+        },
+        {
+          "amount": "112659800000000000000000",
+          "destinationBlockNumber": 1814712,
+          "direction": "EthAvail",
+          "messageId": 1714,
+          "receiver": "0xc2b6ddd8382bcb813753562adb3d30cda40369750401b195dbabc6ac9bce620c",
+          "sender": "0xc1b2aff52877b4a23422f554f3d240be50ec80cf",
+          "sourceBlockHash": "0xd3b45a1add7316c98d5bb7386d350a785b71f1db7c980018546b54de3172c5b7",
+          "sourceTransactionHash": "0xa4060c27091859b64b71e4f479830b95c6948d29e189a1af6b1b016db0f48be9",
+          "status": "Bridged"
         }
+      ]
       ```
 
 ### Map slot to Ethereum block number (Deprecated)
@@ -372,6 +358,21 @@ RUSTFLAGS="-C target-cpu=native" cargo run --profile maxperf
         "blockHash":"0x5282299b298fe1d7238f1a48aa0f5e7cc19ccbcdeeba020b610db78abeb0d52b",
         "blockNumber":5380093
       }
+      ```
+
+
+### Initiate transaction
+
+* To mark transaction as initiated:
+
+    * Request
+
+      `POST /v2/transaction/:tx_hash`
+
+      ```bash
+      # curl <endpoint URL>/v2/transaction/<txHash>
+      curl -X POST \
+      http://localhost:8080/v2/transaction/0x03c6dbd3c24c3f85e05be26d79f2f676f7c7ef4709
       ```
 
 ### Examples of using bridge api 
