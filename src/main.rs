@@ -173,7 +173,7 @@ async fn transaction(
     )
     .bind(message_id)
     .bind("MessageSent")
-    .bind(BridgeStatusEnum::Initialized)
+    .bind(BridgeStatusEnum::Initiated)
     .bind(tx.from)
     .bind(recipient)
     .bind(BigDecimal::from(av))
@@ -329,7 +329,7 @@ async fn transactions(
                 && r.block_height < range_blocks.data.end as i32
             {
                 r.final_status = BridgeStatusEnum::ClaimReady;
-            } else if r.final_status == BridgeStatusEnum::Initialized
+            } else if r.final_status == BridgeStatusEnum::Initiated
                 || r.final_status == BridgeStatusEnum::InProgress
             {
                 estimate = Some(claim_estimate.as_secs());

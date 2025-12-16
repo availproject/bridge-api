@@ -283,7 +283,7 @@ where
 #[sqlx(type_name = "status")]
 pub enum BridgeStatusEnum {
     #[sqlx(rename = "initiated")]
-    Initialized,
+    Initiated,
     #[sqlx(rename = "in_progress")]
     InProgress,
     #[sqlx(rename = "claim_ready")]
