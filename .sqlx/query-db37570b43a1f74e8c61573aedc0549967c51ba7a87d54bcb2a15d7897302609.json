@@ -1,0 +1,86 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT\n    ai1.id                              as message_id,\n    COALESCE(ai1.signature_address, '') AS \"sender!\",\n    es.to                               AS \"receiver!\",\n    COALESCE(es.amount, '0')::text      AS \"amount!\",\n    ai1.block_hash                      as source_block_hash,\n    ai1.ext_hash                        as source_transaction_hash,\n    ai1.block_height,\n    ai1.ext_index,\n    COALESCE(\n            CASE\n                WHEN aet.message_id IS NOT NULL THEN 'bridged'::status\n                END,\n            'in_progress'::status\n    ) ::status                          AS \"final_status!: BridgeStatusEnum\"\nFROM avail_send_message_table es\n         INNER JOIN public.avail_indexer AS ai1\n                    ON ai1.id = es.id\n         LEFT JOIN public.bridge_event AS aet\n                   ON es.id = aet.message_id\nWHERE ai1.signature_address = $1\n  AND aet.event_type = $3\n  AND ai1.ext_success = $4\n  AND es.type = $2\nORDER BY es.id DESC\nLIMIT 1000;",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "message_id",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "sender!",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "receiver!",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "amount!",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "source_block_hash",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 5,
+        "name": "source_transaction_hash",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 6,
+        "name": "block_height",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 7,
+        "name": "ext_index",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 8,
+        "name": "final_status!: BridgeStatusEnum",
+        "type_info": {
+          "Custom": {
+            "name": "status",
+            "kind": {
+              "Enum": [
+                "bridged",
+                "in_progress",
+                "claim_ready",
+                "initialized",
+                "initiated"
+              ]
+            }
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Text",
+        "Bool"
+      ]
+    },
+    "nullable": [
+      false,
+      null,
+      false,
+      null,
+      false,
+      false,
+      false,
+      false,
+      null
+    ]
+  },
+  "hash": "db37570b43a1f74e8c61573aedc0549967c51ba7a87d54bcb2a15d7897302609"
+}
