@@ -222,17 +222,10 @@ async fn transactions(
         ));
     }
 
-    let avail_finalized_block: u32 = state
-        .avail_client
-        .request("chain_getFinalizedHead", rpc_params![])
-        .await
-        .context("finalized head")
-        .unwrap_or(0);
-
-    let mut transaction_results: Vec<TransactionData> = vec![];
+    let mut transaction_data_results: Vec<TransactionData> = vec![];
 
     if let Some(eth_address) = address_query.eth_address {
-        let rows: Vec<TransactionRow> = sqlx::query_file_as!(
+        let transactions: Vec<TransactionRow> = sqlx::query_file_as!(
             TransactionRow,
             "sql/query_eth_tx.sql",
             format!("{:?}", eth_address),
@@ -242,42 +235,42 @@ async fn transactions(
         .await?;
 
         let slot_block_head = SLOT_BLOCK_HEAD.read().await;
-        let (_slot, block, _hash, timestamp) = slot_block_head.as_ref().ok_or_else(|| {
+        let (_slot, last_eth_block, _hash, helios_update_timestamp) = slot_block_head.as_ref().ok_or_else(|| {
             ErrorResponse::with_status(anyhow!("Not found"), StatusCode::INTERNAL_SERVER_ERROR)
         })?;
 
         let claim_estimate =
-            time_until_next_helios_update(*timestamp, state.helios_update_frequency);
+            time_until_next_helios_update(*helios_update_timestamp, state.helios_update_frequency);
 
-        for mut r in rows {
+        for mut tx in transactions {
             let mut estimate = None;
-            if r.final_status != BridgeStatusEnum::Bridged && r.block_height <= *block as i32 {
-                r.final_status = BridgeStatusEnum::ClaimReady
-            } else if r.final_status != BridgeStatusEnum::Bridged
-                && r.final_status != BridgeStatusEnum::ClaimReady
+            if tx.final_status != BridgeStatusEnum::Bridged && tx.block_height <= (*last_eth_block) as i32 { // safe cast
+                tx.final_status = BridgeStatusEnum::ClaimReady
+            } else if tx.final_status != BridgeStatusEnum::Bridged
+                && tx.final_status != BridgeStatusEnum::ClaimReady
             {
                 estimate = Some(claim_estimate.as_secs());
             }
 
-            let tx = TransactionData::new(
+            let tx_data = TransactionData::new(
                 EthAvail,
-                r.message_id,
-                r.sender,
-                r.receiver,
-                r.source_block_hash,
-                r.source_transaction_hash,
-                r.amount,
-                r.final_status,
+                tx.message_id,
+                tx.sender,
+                tx.receiver,
+                tx.source_block_hash,
+                tx.source_transaction_hash,
+                tx.amount,
+                tx.final_status,
                 estimate,
-                r.block_height,
+                tx.block_height,
                 None,
             );
-            transaction_results.push(tx);
+            transaction_data_results.push(tx_data);
         }
     }
 
     if let Some(avail_address) = address_query.avail_address {
-        let rows: Vec<TransactionRow> = sqlx::query_file_as!(
+        let transactions: Vec<TransactionRow> = sqlx::query_file_as!(
             TransactionRow,
             "sql/query_avail_tx.sql",
             avail_address,
@@ -288,35 +281,14 @@ async fn transactions(
         .fetch_all(&state.db)
         .await?;
 
-        let url = format!(
-            "{}/api/{}?chainName={}&contractChainId={}&contractAddress={}",
-            state.merkle_proof_service_base_url,
-            "range",
-            state.avail_chain_name,
-            state.contract_chain_id,
-            state.contract_address
-        );
+        let range_blocks = fetch_range_blocks(&state).await?;
 
-        let response = state.request_client.get(url).send().await.map_err(|e| {
-            tracing::error!("❌ Cannot parse range blocks: {e:#}");
-            ErrorResponse::with_status_and_headers(
-                anyhow!("{e:#}"),
-                StatusCode::INTERNAL_SERVER_ERROR,
-                &[("Cache-Control", "public, max-age=60, must-revalidate")],
-            )
-        })?;
-
-        let range_blocks = response
-            .json::<RangeBlocksAPIResponse>()
+        let avail_finalized_block: u32 = state
+            .avail_client
+            .request("chain_getFinalizedHead", rpc_params![])
             .await
-            .map_err(|e| {
-                tracing::error!("❌ Cannot parse range blocks: {e:#}");
-                ErrorResponse::with_status_and_headers(
-                    anyhow!("{e:#}"),
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    &[("Cache-Control", "public, max-age=60, must-revalidate")],
-                )
-            })?;
+            .context("finalized head")
+            .unwrap_or(0);
 
         let claim_estimate = remaining_time_seconds(
             avail_finalized_block,
@@ -324,40 +296,72 @@ async fn transactions(
             state.vector_update_frequency,
             20,
         );
-        let avail_send: Vec<TransactionData> = Vec::new();
 
-        for mut r in rows {
+        for mut tx in transactions {
             let mut estimate = None;
 
-            if r.final_status == BridgeStatusEnum::InProgress
-                && r.block_height < range_blocks.data.end as i32
+            if tx.final_status == BridgeStatusEnum::InProgress
+                && tx.block_height < range_blocks.data.end as i32
             {
-                r.final_status = BridgeStatusEnum::ClaimReady;
-            } else if r.final_status == BridgeStatusEnum::Initiated
-                || r.final_status == BridgeStatusEnum::InProgress
+                tx.final_status = BridgeStatusEnum::ClaimReady;
+            } else if tx.final_status == BridgeStatusEnum::Initiated
+                || tx.final_status == BridgeStatusEnum::InProgress
             {
                 estimate = Some(claim_estimate.as_secs());
             }
 
-            let tx = TransactionData::new(
+            let tx_data = TransactionData::new(
                 AvailEth,
-                r.message_id,
-                r.sender,
-                r.receiver,
-                r.source_block_hash,
-                r.source_transaction_hash,
-                r.amount,
-                r.final_status,
+                tx.message_id,
+                tx.sender,
+                tx.receiver,
+                tx.source_block_hash,
+                tx.source_transaction_hash,
+                tx.amount,
+                tx.final_status,
                 estimate,
-                r.block_height,
-                r.ext_index,
+                tx.block_height,
+                tx.ext_index,
             );
 
-            transaction_results.push(tx);
+            transaction_data_results.push(tx_data);
         }
     }
 
-    Ok(Json(json!(transaction_results)))
+    Ok(Json(json!(transaction_data_results)))
+}
+
+async fn fetch_range_blocks(state: &Arc<AppState>) -> Result<RangeBlocksAPIResponse, ErrorResponse> {
+    let block_range_url = format!(
+        "{}/api/{}?chainName={}&contractChainId={}&contractAddress={}",
+        state.merkle_proof_service_base_url,
+        "range",
+        state.avail_chain_name,
+        state.contract_chain_id,
+        state.contract_address
+    );
+
+    let response = state.request_client.get(block_range_url).send().await.map_err(|e| {
+        tracing::error!("Cannot parse range blocks: {e:#}");
+        ErrorResponse::with_status_and_headers(
+            anyhow!("{e:#}"),
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &[("Cache-Control", "public, max-age=60, must-revalidate")],
+        )
+    })?;
+
+    let range_blocks = response
+        .json::<RangeBlocksAPIResponse>()
+        .await
+        .map_err(|e| {
+            tracing::error!("Cannot parse range blocks: {e:#}");
+            ErrorResponse::with_status_and_headers(
+                anyhow!("{e:#}"),
+                StatusCode::INTERNAL_SERVER_ERROR,
+                &[("Cache-Control", "public, max-age=60, must-revalidate")],
+            )
+        })?;
+    Ok(range_blocks)
 }
 
 fn remaining_time_seconds(
