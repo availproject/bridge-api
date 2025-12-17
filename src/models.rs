@@ -9,8 +9,8 @@ use jsonrpsee::core::Serialize;
 use serde::{Deserialize, Deserializer};
 use serde_json::json;
 use serde_with::serde_as;
-use sp_core::{H160};
-use sqlx::{FromRow};
+use sp_core::H160;
+use sqlx::FromRow;
 
 sol!(
     #[allow(missing_docs)]
@@ -278,8 +278,7 @@ where
     u32::from_str_radix(s.trim_start_matches("0x"), 16).map_err(serde::de::Error::custom)
 }
 
-#[derive(Debug, PartialEq, Serialize, Deserialize)]
-#[derive(sqlx::Type)]
+#[derive(Debug, PartialEq, Serialize, Deserialize, sqlx::Type)]
 #[sqlx(type_name = "status")]
 pub enum BridgeStatusEnum {
     #[sqlx(rename = "initiated")]
@@ -314,11 +313,10 @@ pub struct TransactionRow {
     pub ext_index: Option<i32>,
 }
 
-
 #[derive(Debug, Serialize, Deserialize)]
 pub enum TxDirection {
     AvailEth,
-    EthAvail
+    EthAvail,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
