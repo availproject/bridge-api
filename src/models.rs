@@ -369,12 +369,6 @@ impl TransactionData {
         }
     }
 }
-#[derive(Debug, Default, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct TransactionResult {
-    pub avail_send: Vec<TransactionData>,
-    pub eth_send: Vec<TransactionData>,
-}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

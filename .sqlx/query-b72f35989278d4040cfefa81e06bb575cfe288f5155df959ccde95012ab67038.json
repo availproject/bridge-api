@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT\n    es.message_id,\n    es.sender,\n    es.receiver,\n    es.amount,\n    es.source_block_hash,\n    es.source_transaction_hash,\n    ai.block_height,\n    COALESCE(\n            CASE\n                WHEN es.status = 'in_progress' AND aet.message_id IS NULL THEN 'in_progress'::status\n                WHEN es.status = 'in_progress' AND aet.message_id IS NOT NULL THEN 'bridged'::status\n                ELSE es.status\n                END,\n            'in_progress'::status\n    ) ::status                          AS \"final_status!: BridgeStatusEnum\",\n    NULL::integer   AS ext_index\nFROM bridge_event es\n         LEFT JOIN public.avail_execute_table AS aet\n                   ON es.message_id = aet.message_id\n         INNER JOIN public.avail_indexer ai on ai.id = aet.id\nWHERE es.sender = $1\n  AND es.event_type = $2\nORDER BY es.message_id DESC limit 1000",
+  "query": "SELECT\n    be.message_id,\n    be.sender,\n    be.receiver,\n    be.amount,\n    be.source_block_hash,\n    be.source_transaction_hash,\n    ai.block_height,\n    COALESCE(\n            CASE\n                WHEN be.status = 'in_progress' AND aet.message_id IS NULL THEN 'in_progress'::status\n                WHEN be.status = 'in_progress' AND aet.message_id IS NOT NULL THEN 'bridged'::status\n                ELSE be.status\n                END,\n            'in_progress'::status\n    ) ::status                          AS \"final_status!: BridgeStatusEnum\",\n    NULL::integer   AS ext_index\nFROM bridge_event be\n         LEFT JOIN public.avail_execute_table AS aet\n                   ON be.message_id = aet.message_id\n         INNER JOIN public.avail_indexer ai on ai.id = aet.id\nWHERE be.sender = $1\n  AND be.event_type = $2\nORDER BY be.message_id DESC limit 1000",
   "describe": {
     "columns": [
       {
@@ -80,5 +80,5 @@
       null
     ]
   },
-  "hash": "3ed137e1d484a819494dbe3b18865cab902fc76df32b349bea5b6435594725a6"
+  "hash": "b72f35989278d4040cfefa81e06bb575cfe288f5155df959ccde95012ab67038"
 }

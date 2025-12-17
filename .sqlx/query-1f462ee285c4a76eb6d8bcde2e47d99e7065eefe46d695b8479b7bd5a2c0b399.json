@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT\n    ai1.id                              as message_id,\n    COALESCE(ai1.signature_address, '') AS \"sender!\",\n    es.to                               AS \"receiver!\",\n    COALESCE(es.amount, '0')::text      AS \"amount!\",\n    ai1.block_hash                      as source_block_hash,\n    ai1.ext_hash                        as source_transaction_hash,\n    ai1.block_height,\n    ai1.ext_index,\n    COALESCE(\n            CASE\n                WHEN aet.message_id IS NOT NULL THEN 'bridged'::status\n                END,\n            'in_progress'::status\n    ) ::status                          AS \"final_status!: BridgeStatusEnum\"\nFROM avail_send_message_table es\n         INNER JOIN public.avail_indexer AS ai1\n                    ON ai1.id = es.id\n         LEFT JOIN public.bridge_event AS aet\n                   ON es.id = aet.message_id\nWHERE ai1.signature_address = $1\n  AND aet.event_type = $3\n  AND ai1.ext_success = $4\n  AND es.type = $2\nORDER BY es.id DESC\nLIMIT 1000;",
+  "query": "SELECT\n    ai.id                              as message_id,\n    COALESCE(ai.signature_address, '') AS \"sender!\",\n    es.to                              AS \"receiver!\",\n    COALESCE(es.amount, '0')::text     AS \"amount!\",\n    ai.block_hash                      as source_block_hash,\n    ai.ext_hash                        as source_transaction_hash,\n    ai.block_height,\n    ai.ext_index,\n    COALESCE(\n            CASE\n                WHEN be.message_id IS NOT NULL THEN 'bridged'::status\n                END,\n            'in_progress'::status\n    ) ::status                         AS \"final_status!: BridgeStatusEnum\"\nFROM avail_send_message_table es\n         INNER JOIN public.avail_indexer AS ai\n                    ON ai.id = es.id\n         LEFT JOIN public.bridge_event AS be\n                   ON es.id = be.message_id\nWHERE ai.signature_address = $1\n  AND be.event_type = $3\n  AND ai.ext_success = $4\n  AND es.type = $2\nORDER BY es.id DESC\nLIMIT 1000;",
   "describe": {
     "columns": [
       {
@@ -82,5 +82,5 @@
       null
     ]
   },
-  "hash": "db37570b43a1f74e8c61573aedc0549967c51ba7a87d54bcb2a15d7897302609"
+  "hash": "1f462ee285c4a76eb6d8bcde2e47d99e7065eefe46d695b8479b7bd5a2c0b399"
 }

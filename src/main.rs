@@ -156,20 +156,8 @@ async fn transaction(
     let AvailBridgeEvents::MessageSent(call) = decoded.data;
     let message_id: i64 = call.messageId.try_into()?;
 
-    sqlx::query!(
-        r#"
-    INSERT INTO bridge_event (
-        message_id,
-        event_type,
-        status,
-        sender,
-        receiver,
-        amount,
-        source_block_hash,
-        block_number,
-        source_transaction_hash
-    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-    "#,
+    sqlx::query_file!(
+        "sql/insert_tx.sql",
         message_id,
         "MessageSent",
         BridgeStatusEnum::Initiated as BridgeStatusEnum, // cast if needed
@@ -235,16 +223,20 @@ async fn transactions(
         .await?;
 
         let slot_block_head = SLOT_BLOCK_HEAD.read().await;
-        let (_slot, last_eth_block, _hash, helios_update_timestamp) = slot_block_head.as_ref().ok_or_else(|| {
-            ErrorResponse::with_status(anyhow!("Not found"), StatusCode::INTERNAL_SERVER_ERROR)
-        })?;
+        let (_slot, last_eth_block, _hash, helios_update_timestamp) =
+            slot_block_head.as_ref().ok_or_else(|| {
+                ErrorResponse::with_status(anyhow!("Not found"), StatusCode::INTERNAL_SERVER_ERROR)
+            })?;
 
         let claim_estimate =
             time_until_next_helios_update(*helios_update_timestamp, state.helios_update_frequency);
 
         for mut tx in transactions {
             let mut estimate = None;
-            if tx.final_status != BridgeStatusEnum::Bridged && tx.block_height <= (*last_eth_block) as i32 { // safe cast
+            if tx.final_status != BridgeStatusEnum::Bridged
+                && tx.block_height <= (*last_eth_block) as i32
+            {
+                // safe cast
                 tx.final_status = BridgeStatusEnum::ClaimReady
             } else if tx.final_status != BridgeStatusEnum::Bridged
                 && tx.final_status != BridgeStatusEnum::ClaimReady
@@ -252,7 +244,7 @@ async fn transactions(
                 estimate = Some(claim_estimate.as_secs());
             }
 
-            let tx_data = TransactionData::new(
+            transaction_data_results.push(TransactionData::new(
                 EthAvail,
                 tx.message_id,
                 tx.sender,
@@ -264,8 +256,7 @@ async fn transactions(
                 estimate,
                 tx.block_height,
                 None,
-            );
-            transaction_data_results.push(tx_data);
+            ));
         }
     }
 
@@ -290,7 +281,7 @@ async fn transactions(
             .context("finalized head")
             .unwrap_or(0);
 
-        let claim_estimate = remaining_time_seconds(
+        let claim_estimate = time_until_next_vector_update(
             avail_finalized_block,
             range_blocks.data.end,
             state.vector_update_frequency,
@@ -310,7 +301,7 @@ async fn transactions(
                 estimate = Some(claim_estimate.as_secs());
             }
 
-            let tx_data = TransactionData::new(
+            transaction_data_results.push(TransactionData::new(
                 AvailEth,
                 tx.message_id,
                 tx.sender,
@@ -322,16 +313,16 @@ async fn transactions(
                 estimate,
                 tx.block_height,
                 tx.ext_index,
-            );
-
-            transaction_data_results.push(tx_data);
+            ));
         }
     }
 
     Ok(Json(json!(transaction_data_results)))
 }
 
-async fn fetch_range_blocks(state: &Arc<AppState>) -> Result<RangeBlocksAPIResponse, ErrorResponse> {
+async fn fetch_range_blocks(
+    state: &Arc<AppState>,
+) -> Result<RangeBlocksAPIResponse, ErrorResponse> {
     let block_range_url = format!(
         "{}/api/{}?chainName={}&contractChainId={}&contractAddress={}",
         state.merkle_proof_service_base_url,
@@ -341,14 +332,19 @@ async fn fetch_range_blocks(state: &Arc<AppState>) -> Result<RangeBlocksAPIRespo
         state.contract_address
     );
 
-    let response = state.request_client.get(block_range_url).send().await.map_err(|e| {
-        tracing::error!("Cannot parse range blocks: {e:#}");
-        ErrorResponse::with_status_and_headers(
-            anyhow!("{e:#}"),
-            StatusCode::INTERNAL_SERVER_ERROR,
-            &[("Cache-Control", "public, max-age=60, must-revalidate")],
-        )
-    })?;
+    let response = state
+        .request_client
+        .get(block_range_url)
+        .send()
+        .await
+        .map_err(|e| {
+            tracing::error!("Cannot parse range blocks: {e:#}");
+            ErrorResponse::with_status_and_headers(
+                anyhow!("{e:#}"),
+                StatusCode::INTERNAL_SERVER_ERROR,
+                &[("Cache-Control", "public, max-age=60, must-revalidate")],
+            )
+        })?;
 
     let range_blocks = response
         .json::<RangeBlocksAPIResponse>()
@@ -362,26 +358,6 @@ async fn fetch_range_blocks(state: &Arc<AppState>) -> Result<RangeBlocksAPIRespo
             )
         })?;
     Ok(range_blocks)
-}
-
-fn remaining_time_seconds(
-    current_block: u32,
-    last_updated_block: u32,
-    blocks_per_update: u32,
-    block_time_seconds: u32,
-) -> Duration {
-    let blocks_since_update = current_block.saturating_sub(last_updated_block);
-    let blocks_remaining = blocks_per_update.saturating_sub(blocks_since_update);
-
-    Duration::from_secs((blocks_remaining * block_time_seconds) as u64)
-}
-
-fn time_until_next_helios_update(timestamp_ms: u64, heliso_update_frequency: u32) -> Duration {
-    let now = Utc::now().timestamp() as u64;
-    let time_since_update = now - timestamp_ms;
-    let update_frequency = Duration::from_secs(heliso_update_frequency as u64).as_secs();
-    let remaining = update_frequency.saturating_sub(time_since_update);
-    Duration::from_secs(remaining)
 }
 
 #[inline(always)]
@@ -1192,17 +1168,37 @@ async fn track_slot_avail_task(state: Arc<AppState>) -> Result<()> {
     Ok(())
 }
 
+fn time_until_next_vector_update(
+    current_block: u32,
+    last_updated_block: u32,
+    blocks_per_update: u32,
+    block_time_seconds: u32,
+) -> Duration {
+    let blocks_since_update = current_block.saturating_sub(last_updated_block);
+    let blocks_remaining = blocks_per_update.saturating_sub(blocks_since_update);
+
+    Duration::from_secs((blocks_remaining * block_time_seconds) as u64)
+}
+
+fn time_until_next_helios_update(timestamp_ms: u64, helios_update_frequency: u32) -> Duration {
+    let now = Utc::now().timestamp() as u64;
+    let time_since_update = now - timestamp_ms;
+    let update_frequency = Duration::from_secs(helios_update_frequency as u64).as_secs();
+    let remaining = update_frequency.saturating_sub(time_since_update);
+    Duration::from_secs(remaining)
+}
+
 #[test]
 fn test_remaining_time_for_vector_update() {
-    let d = remaining_time_seconds(350, 50, 360, 20);
-    assert_eq!(1200, d.as_secs());
-    let d = remaining_time_seconds(100, 50, 360, 20);
-    assert_eq!(6200, d.as_secs());
+    let duration = time_until_next_vector_update(350, 50, 360, 20);
+    assert_eq!(1200, duration.as_secs());
+    let duration = time_until_next_vector_update(100, 50, 360, 20);
+    assert_eq!(6200, duration.as_secs());
 }
 
 #[test]
 fn test_remaining_time_for_helios_update() {
     let update = Utc::now().timestamp() - 1200;
-    let remaining = time_until_next_helios_update(update as u64);
+    let remaining = time_until_next_helios_update(update as u64, 3600);
     assert_eq!(2400, remaining.as_secs());
 }
