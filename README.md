@@ -309,34 +309,34 @@ RUSTFLAGS="-C target-cpu=native" cargo run --profile maxperf
       curl localhost:8080/v2/transactions?availAddress=0x1a985fdff5f6eee4afce1dc0f367ab925cdca57e7e8585329830fc3ce6ef4e7a&ethAddress=0x48e7e157cf873c15a5a6734ea37c000e1cb2383d
       ```
 
-    * Response
+      * Response
 
-      ```json
-      [
-        {
-          "amount": "230000000000000000000000",
-          "destinationBlockNumber": 1815039,
-          "direction": "EthAvail",
-          "messageId": 1717,
-          "receiver": "0xc2b6ddd8382bcb813753562adb3d30cda40369750401b195dbabc6ac9bce620c",
-          "sender": "0xc1b2aff52877b4a23422f554f3d240be50ec80cf",
-          "sourceBlockHash": "0x8de5e002e1508780075a27c94fd4ef802899fb8adf0fb6a91c054e20a7ba41fd",
-          "sourceTransactionHash": "0x8900d0483699fde57a13451d86130b3632946a0883936f9fb831914f18f643fb",
-          "status": "Bridged"
-        },
-        {
-          "amount": "112659800000000000000000",
-          "destinationBlockNumber": 1814712,
-          "direction": "EthAvail",
-          "messageId": 1714,
-          "receiver": "0xc2b6ddd8382bcb813753562adb3d30cda40369750401b195dbabc6ac9bce620c",
-          "sender": "0xc1b2aff52877b4a23422f554f3d240be50ec80cf",
-          "sourceBlockHash": "0xd3b45a1add7316c98d5bb7386d350a785b71f1db7c980018546b54de3172c5b7",
-          "sourceTransactionHash": "0xa4060c27091859b64b71e4f479830b95c6948d29e189a1af6b1b016db0f48be9",
-          "status": "Bridged"
-        }
-      ]
-      ```
+        ```json
+        [
+            {
+              "amount": "200000000000000000000000",
+              "claimEstimate": 3284,
+              "direction": "EthAvail",
+              "messageId": 1771,
+              "receiver": "0xc2b6ddd8382bcb813753562adb3d30cda40369750401b195dbabc6ac9bce620c",
+              "sender": "0xc1b2aff52877b4a23422f554f3d240be50ec80cf",
+              "sourceBlockHash": "0x1b18ad7d42e941b5df80585c2674aa9cd70cca6312dcca6374237b512e59ad7a",
+              "sourceTxHash": "0x3d4fa0e38bae95ad0a512def7c8d19174ecb943fe6a49fab55682ec6f89ab60a",
+              "status": "InProgress"
+            },
+            {
+              "amount": "189766320000000000000000",
+              "claimEstimate": 3284,
+              "direction": "EthAvail",
+              "messageId": 1751,
+              "receiver": "0xc2b6ddd8382bcb813753562adb3d30cda40369750401b195dbabc6ac9bce620c",
+              "sender": "0xc1b2aff52877b4a23422f554f3d240be50ec80cf",
+              "sourceBlockHash": "0x207a0be28232e64fb984ac0ad1ea6e79cb32bbbf8217962277a4b2c9bc802997",
+              "sourceTxHash": "0xd060a6b7f8946bd0c8c8fb1bedf58f81a5745c250ef800e1bc18b00d57c79013",
+              "status": "InProgress"
+            }
+        ]
+        ```
 
 ### Map slot to Ethereum block number (Deprecated)
 

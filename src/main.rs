@@ -213,8 +213,8 @@ async fn transactions(
     let mut transaction_data_results: Vec<TransactionData> = vec![];
 
     if let Some(eth_address) = address_query.eth_address {
-        let transactions: Vec<TransactionRow> = sqlx::query_file_as!(
-            TransactionRow,
+        let transactions: Vec<EthTransactionRow> = sqlx::query_file_as!(
+            EthTransactionRow,
             "sql/query_eth_tx.sql",
             format!("{:?}", eth_address),
             "MessageSent"
@@ -234,7 +234,7 @@ async fn transactions(
         for mut tx in transactions {
             let mut estimate = None;
             if tx.final_status != BridgeStatusEnum::Bridged
-                && tx.block_height <= (*last_eth_block) as i32
+                && tx.source_block_height <= (*last_eth_block) as i32
             {
                 // safe cast
                 tx.final_status = BridgeStatusEnum::ClaimReady
@@ -254,15 +254,18 @@ async fn transactions(
                 tx.amount,
                 tx.final_status,
                 estimate,
-                tx.block_height,
+                None,
+                None,
+                tx.destination_block_height,
+                tx.destination_tx_index,
                 None,
             ));
         }
     }
 
     if let Some(avail_address) = address_query.avail_address {
-        let transactions: Vec<TransactionRow> = sqlx::query_file_as!(
-            TransactionRow,
+        let transactions: Vec<AvailTransactionRow> = sqlx::query_file_as!(
+            AvailTransactionRow,
             "sql/query_avail_tx.sql",
             avail_address,
             "FungibleToken",
@@ -292,7 +295,7 @@ async fn transactions(
             let mut estimate = None;
 
             if tx.final_status == BridgeStatusEnum::InProgress
-                && tx.block_height < range_blocks.data.end as i32
+                && tx.source_block_height < range_blocks.data.end as i32
             {
                 tx.final_status = BridgeStatusEnum::ClaimReady;
             } else if tx.final_status == BridgeStatusEnum::Initiated
@@ -311,8 +314,11 @@ async fn transactions(
                 tx.amount,
                 tx.final_status,
                 estimate,
-                tx.block_height,
-                tx.ext_index,
+                Some(tx.source_tx_index),
+                Some(tx.source_block_height),
+                None,
+                None,
+                tx.destination_tx_hash,
             ));
         }
     }

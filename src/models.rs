@@ -301,7 +301,7 @@ pub struct TransactionQueryParams {
 #[derive(Debug, Serialize, Deserialize, FromRow)]
 #[serde_as]
 #[serde(rename_all = "camelCase")]
-pub struct TransactionRow {
+pub struct EthTransactionRow {
     pub message_id: i64,
     pub sender: String,
     pub receiver: String,
@@ -309,8 +309,25 @@ pub struct TransactionRow {
     pub source_transaction_hash: String,
     pub amount: String,
     pub final_status: BridgeStatusEnum,
-    pub block_height: i32,
-    pub ext_index: Option<i32>,
+    pub source_block_height: i32,
+    pub destination_block_height: Option<i32>,
+    pub destination_tx_index: Option<i32>,
+}
+
+#[derive(Debug, Serialize, Deserialize, FromRow)]
+#[serde_as]
+#[serde(rename_all = "camelCase")]
+pub struct AvailTransactionRow {
+    pub message_id: i64,
+    pub sender: String,
+    pub receiver: String,
+    pub source_block_hash: String,
+    pub source_transaction_hash: String,
+    pub amount: String,
+    pub final_status: BridgeStatusEnum,
+    pub source_block_height: i32,
+    pub source_tx_index: i32,
+    pub destination_tx_hash: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -328,14 +345,21 @@ pub struct TransactionData {
     pub sender: String,
     pub receiver: String,
     pub source_block_hash: String,
-    pub source_transaction_hash: String,
+    pub source_tx_hash: String,
     pub amount: String,
     pub status: BridgeStatusEnum,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub claim_estimate: Option<u64>,
-    pub destination_block_number: i32,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub tx_index: Option<i32>,
+    pub source_block_number: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_tx_index: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub destination_block_number: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub destination_tx_index: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub destination_tx_hash: Option<String>,
 }
 
 impl TransactionData {
@@ -345,12 +369,15 @@ impl TransactionData {
         sender: String,
         receiver: String,
         source_block_hash: String,
-        source_transaction_hash: String,
+        source_tx_hash: String,
         amount: String,
         status: BridgeStatusEnum,
         claim_estimate: Option<u64>,
-        destination_block_number: i32,
-        tx_index: Option<i32>,
+        source_block_number: Option<i32>,
+        source_tx_index: Option<i32>,
+        destination_block_number: Option<i32>,
+        destination_tx_index: Option<i32>,
+        destination_tx_hash: Option<String>,
     ) -> Self {
         Self {
             direction,
@@ -358,12 +385,15 @@ impl TransactionData {
             sender,
             receiver,
             source_block_hash,
-            source_transaction_hash,
+            source_tx_hash,
             amount,
             status,
             claim_estimate,
+            source_block_number,
+            source_tx_index,
             destination_block_number,
-            tx_index,
+            destination_tx_index,
+            destination_tx_hash,
         }
     }
 }

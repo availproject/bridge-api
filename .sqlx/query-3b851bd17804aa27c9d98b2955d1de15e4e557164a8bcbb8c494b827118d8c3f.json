@@ -1,0 +1,92 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT ai.id                          AS message_id,\n       ai.signature_address           AS sender,\n       es.to                          AS \"receiver!\",\n       COALESCE(es.amount, '0')::text AS \"amount!\",\n       ai.block_hash                  AS source_block_hash,\n       ai.ext_hash                    AS source_transaction_hash,\n       ai.block_height                AS source_block_height,\n       ai.ext_index                   AS source_tx_index,\n       be.source_transaction_hash     AS \"destination_tx_hash?: String\",\n       COALESCE(\n               CASE\n                   WHEN be.message_id IS NOT NULL THEN 'bridged'::status\n                   END,\n               'in_progress'::status\n       ) ::status                     AS \"final_status!: BridgeStatusEnum\"\nFROM avail_send_message_table es\n         INNER JOIN public.avail_indexer AS ai\n                    ON ai.id = es.id\n         LEFT JOIN public.bridge_event AS be\n                   ON es.id = be.message_id\nWHERE ai.signature_address = $1\n  AND be.event_type = $3\n  AND ai.ext_success = $4\n  AND es.type = $2\nORDER BY es.id DESC\nLIMIT 1000;",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "message_id",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "sender",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "receiver!",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "amount!",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "source_block_hash",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 5,
+        "name": "source_transaction_hash",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 6,
+        "name": "source_block_height",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 7,
+        "name": "source_tx_index",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 8,
+        "name": "destination_tx_hash?: String",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 9,
+        "name": "final_status!: BridgeStatusEnum",
+        "type_info": {
+          "Custom": {
+            "name": "status",
+            "kind": {
+              "Enum": [
+                "bridged",
+                "in_progress",
+                "claim_ready",
+                "initialized",
+                "initiated"
+              ]
+            }
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Text",
+        "Bool"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      null,
+      false,
+      false,
+      false,
+      false,
+      false,
+      null
+    ]
+  },
+  "hash": "3b851bd17804aa27c9d98b2955d1de15e4e557164a8bcbb8c494b827118d8c3f"
+}
