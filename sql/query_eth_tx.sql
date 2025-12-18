@@ -18,7 +18,7 @@ SELECT
 FROM bridge_event be
          LEFT JOIN public.avail_execute_table AS aet
                    ON be.message_id = aet.message_id
-         INNER JOIN public.avail_indexer ai on ai.id = aet.id
+         LEFT JOIN public.avail_indexer ai on ai.id = aet.id
 WHERE be.sender = $1
   AND be.event_type = $2
 ORDER BY be.message_id DESC limit 1000
