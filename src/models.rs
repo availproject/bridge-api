@@ -319,7 +319,7 @@ pub struct EthTransactionRow {
 #[serde(rename_all = "camelCase")]
 pub struct AvailTransactionRow {
     pub message_id: i64,
-    pub sender: String,
+    pub sender: Option<String>,
     pub receiver: String,
     pub source_block_hash: String,
     pub source_transaction_hash: String,

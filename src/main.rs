@@ -307,7 +307,7 @@ async fn transactions(
             transaction_data_results.push(TransactionData::new(
                 AvailEth,
                 tx.message_id,
-                tx.sender,
+                tx.sender.unwrap_or("".to_string()), // cannot be empty because of where clause
                 tx.receiver,
                 tx.source_block_hash,
                 tx.source_transaction_hash,
