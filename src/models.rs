@@ -3,7 +3,7 @@ use alloy::sol;
 use avail_core::data_proof::AddressedMessage;
 use axum::Json;
 use axum::response::{IntoResponse, Response};
-
+use bigdecimal::BigDecimal;
 use http::{HeaderMap, HeaderName, HeaderValue, StatusCode};
 use jsonrpsee::core::Serialize;
 use serde::{Deserialize, Deserializer};
@@ -302,7 +302,7 @@ pub struct TransactionQueryParams {
 #[serde_as]
 #[serde(rename_all = "camelCase")]
 pub struct EthTransactionRow {
-    pub message_id: i64,
+    pub message_id: BigDecimal,
     pub sender: String,
     pub receiver: String,
     pub source_block_hash: String,
@@ -318,7 +318,7 @@ pub struct EthTransactionRow {
 #[serde_as]
 #[serde(rename_all = "camelCase")]
 pub struct AvailTransactionRow {
-    pub message_id: i64,
+    pub message_id: BigDecimal,
     pub sender: Option<String>,
     pub receiver: String,
     pub source_block_hash: String,
@@ -341,7 +341,7 @@ pub enum TxDirection {
 #[serde(rename_all = "camelCase")]
 pub struct TransactionData {
     pub direction: TxDirection,
-    pub message_id: i64,
+    pub message_id: BigDecimal,
     pub sender: String,
     pub receiver: String,
     pub source_block_hash: String,
@@ -365,7 +365,7 @@ pub struct TransactionData {
 impl TransactionData {
     pub fn new(
         direction: TxDirection,
-        message_id: i64,
+        message_id: BigDecimal,
         sender: String,
         receiver: String,
         source_block_hash: String,

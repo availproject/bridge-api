@@ -154,16 +154,16 @@ async fn transaction(
 
     let decoded = AvailBridgeEvents::decode_log(&log)?;
     let AvailBridgeEvents::MessageSent(call) = decoded.data;
-    let message_id: i64 = call.messageId.try_into()?;
+    let message_id: u64 = call.messageId.try_into()?;
 
     sqlx::query_file!(
         "sql/insert_tx.sql",
-        message_id,
+        BigDecimal::from(message_id),
         "MessageSent",
         BridgeStatusEnum::Initiated as BridgeStatusEnum, // cast if needed
         tx.from,
         recipient,
-        BigDecimal::from(av).to_string(),
+        av.to_string(),
         tx.block_hash,
         tx.block_number as i32,
         tx.hash

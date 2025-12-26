@@ -56,11 +56,10 @@
             "name": "status",
             "kind": {
               "Enum": [
-                "bridged",
+                "initiated",
                 "in_progress",
                 "claim_ready",
-                "initialized",
-                "initiated"
+                "bridged"
               ]
             }
           }
