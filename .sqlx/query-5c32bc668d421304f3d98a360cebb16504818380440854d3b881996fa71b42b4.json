@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT ai.id                          AS message_id,\n       ai.signature_address           AS sender,\n       es.to                          AS \"receiver!\",\n       COALESCE(es.amount, '0')::text AS \"amount!\",\n       ai.block_hash                  AS source_block_hash,\n       ai.ext_hash                    AS source_transaction_hash,\n       ai.block_height                AS source_block_height,\n       ai.ext_index                   AS source_tx_index,\n       be.source_transaction_hash     AS \"destination_tx_hash?: String\",\n       COALESCE(\n               CASE\n                   WHEN be.message_id IS NOT NULL THEN 'bridged'::status\n                   END,\n               'in_progress'::status\n       ) ::status                     AS \"final_status!: BridgeStatusEnum\"\nFROM avail_send_message_table es\n         INNER JOIN public.avail_indexer AS ai\n                    ON ai.id = es.id\n         LEFT JOIN public.bridge_event AS be\n                   ON es.id = be.message_id\nWHERE ai.signature_address = $1\n  AND be.event_type = $3\n  AND ai.ext_success = $4\n  AND es.type = $2\nORDER BY es.id DESC\nLIMIT 1000;",
+  "query": "SELECT ai.id                          AS message_id,\n       ai.signature_address           AS sender,\n       es.to                          AS \"receiver!\",\n       COALESCE(es.amount, '0')::text AS \"amount!\",\n       ai.block_hash                  AS source_block_hash,\n       ai.ext_hash                    AS source_transaction_hash,\n       ai.block_height                AS source_block_height,\n       ai.ext_index                   AS source_tx_index,\n       be.source_transaction_hash     AS \"destination_tx_hash?: String\",\n       COALESCE(\n               CASE\n                   WHEN be.message_id IS NOT NULL THEN 'bridged'::status\n                   END,\n               'in_progress'::status\n       ) ::status                     AS \"final_status!: BridgeStatusEnum\"\nFROM avail_send_message_table es\n         INNER JOIN public.avail_indexer AS ai\n                    ON ai.id = es.id\n         LEFT JOIN public.bridge_event AS be\n                   ON es.id = be.message_id\nWHERE ai.signature_address = $1\n  AND (be.event_type = $3 or be.event_type is null)\n  AND ai.ext_success = $4\n  AND es.type = $2\nORDER BY es.id DESC\nLIMIT 1000;",
   "describe": {
     "columns": [
       {
@@ -87,5 +87,5 @@
       null
     ]
   },
-  "hash": "3b851bd17804aa27c9d98b2955d1de15e4e557164a8bcbb8c494b827118d8c3f"
+  "hash": "5c32bc668d421304f3d98a360cebb16504818380440854d3b881996fa71b42b4"
 }

@@ -19,7 +19,7 @@ FROM avail_send_message_table es
          LEFT JOIN public.bridge_event AS be
                    ON es.id = be.message_id
 WHERE ai.signature_address = $1
-  AND be.event_type = $3
+  AND (be.event_type = $3 or be.event_type is null)
   AND ai.ext_success = $4
   AND es.type = $2
 ORDER BY es.id DESC
