@@ -21,8 +21,8 @@ FROM bridge_event be
          LEFT JOIN public.avail_indexer AS ai on ai.id = aet.id
 WHERE be.sender = $1
     AND be.event_type = $2
-    AND ai.ext_success = true
-   OR ai.ext_success is null
+    AND (ai.ext_success = true
+   OR ai.ext_success is null)
 
 ORDER BY be.message_id DESC
 limit 1000
