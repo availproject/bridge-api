@@ -97,6 +97,21 @@ async fn alive() -> Result<Json<Value>, StatusCode> {
 }
 
 #[inline(always)]
+async fn info(State(state): State<Arc<AppState>>) -> Result<Json<Value>, StatusCode> {
+    Ok(Json(json!({
+        "vectorXContractAddress": state.contract_address,
+        "vectorXChainId": state.contract_chain_id,
+        "bridgeContractAddress" : state.bridge_contract_address,
+        "availChainName": state.avail_chain_name,
+    })))
+}
+
+#[inline(always)]
+async fn versions(State(_state): State<Arc<AppState>>) -> Result<Json<Value>, StatusCode> {
+    Ok(Json(json!(["v1"])))
+}
+
+#[inline(always)]
 async fn transaction(
     State(state): State<Arc<AppState>>,
     Path(hash): Path<B256>,
@@ -175,21 +190,6 @@ async fn transaction(
     })?;
 
     Ok(())
-}
-
-#[inline(always)]
-async fn info(State(state): State<Arc<AppState>>) -> Result<Json<Value>, StatusCode> {
-    Ok(Json(json!({
-        "vectorXContractAddress": state.contract_address,
-        "vectorXChainId": state.contract_chain_id,
-        "bridgeContractAddress" : state.bridge_contract_address,
-        "availChainName": state.avail_chain_name,
-    })))
-}
-
-#[inline(always)]
-async fn versions(State(_state): State<Arc<AppState>>) -> Result<Json<Value>, StatusCode> {
-    Ok(Json(json!(["v1"])))
 }
 
 #[inline(always)]
