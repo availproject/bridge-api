@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT be.message_id,\n       be.sender,\n       be.receiver,\n       be.amount,\n       be.source_block_hash,\n       be.source_transaction_hash,\n       be.block_number as source_block_height,\n       ai.block_height as \"destination_block_height?: i32\",\n       ai.ext_index    as \"destination_tx_index?: i32\",\n       COALESCE(\n               CASE\n                   WHEN be.status = 'in_progress' AND aet.message_id IS NULL THEN 'in_progress'::status\n                   WHEN be.status = 'in_progress' AND aet.message_id IS NOT NULL THEN 'bridged'::status\n                   ELSE be.status\n                   END,\n               'in_progress'::status\n       ) ::status      AS \"final_status!: BridgeStatusEnum\"\nFROM bridge_event be\n         LEFT JOIN public.avail_execute_table AS aet\n                   ON be.message_id = aet.message_id\n         LEFT JOIN public.avail_indexer AS ai on ai.id = aet.id\nWHERE be.sender = $1\n    AND be.event_type = $2\n    AND (ai.ext_success = true\n   OR ai.ext_success is null)\n\nORDER BY be.message_id DESC\nlimit 1000",
+  "query": "SELECT be.message_id,\n       be.sender,\n       be.receiver,\n       be.amount,\n       be.source_block_hash,\n       be.source_transaction_hash,\n       be.block_number as source_block_height,\n       ai.block_height as \"destination_block_height?: i32\",\n       ai.ext_index    as \"destination_tx_index?: i32\",\n       COALESCE(\n               CASE\n                   WHEN be.status = 'in_progress' AND aet.message_id IS NULL THEN 'in_progress'::status\n                   WHEN be.status = 'in_progress' AND aet.message_id IS NOT NULL THEN 'bridged'::status\n                   ELSE be.status\n                   END,\n               'in_progress'::status\n       ) ::status      AS \"final_status!: BridgeStatusEnum\"\nFROM bridge_event be\n         LEFT JOIN public.avail_execute_table AS aet\n                   ON be.message_id = aet.message_id\n         LEFT JOIN public.avail_indexer AS ai on ai.id = aet.id\nWHERE be.sender = $1\n    AND be.event_type = $2\n    AND (ai.ext_success = $3\n   OR ai.ext_success is null)\n\nORDER BY be.message_id DESC\nlimit 1000",
   "describe": {
     "columns": [
       {
@@ -70,7 +70,8 @@
     "parameters": {
       "Left": [
         "Text",
-        "Text"
+        "Text",
+        "Bool"
       ]
     },
     "nullable": [
@@ -86,5 +87,5 @@
       null
     ]
   },
-  "hash": "b5a64187798ec3a1e508a9bf292efb14fad2067e4368acc28d9ebed2fc5b5ded"
+  "hash": "045d2c6adf0df49f5fb26bf8e21848edc00915b87bc7f911f4cc65760fedd33f"
 }

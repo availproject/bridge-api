@@ -139,14 +139,14 @@ async fn transaction(
         )
     })?;
 
-    let target_topic =
+    let bridge_event_topic =
         B256::from_str("0x06fd209663be9278f96bc53dfbf6cf3cdcf2172c38b5de30abff93ba443d653a")?;
 
     let log = receipt
         .inner
         .logs()
         .iter()
-        .find(|log| log.topics().contains(&target_topic))
+        .find(|log| log.topics().contains(&bridge_event_topic))
         .ok_or_else(|| anyhow!("Cannot find transaction log"))?
         .clone()
         .into();
@@ -216,7 +216,8 @@ async fn transactions(
             EthTransactionRow,
             "sql/query_eth_tx.sql",
             format!("{:?}", eth_address),
-            "MessageSent"
+            "MessageSent",
+            true
         )
         .fetch_all(&state.db)
         .await?;
