@@ -1,4 +1,4 @@
-SELECT ai.id                          AS message_id,
+SELECT be.message_id                  AS message_id,
        ai.signature_address           AS sender,
        es.to                          AS "receiver!",
        COALESCE(es.amount, '0')::text AS "amount!",

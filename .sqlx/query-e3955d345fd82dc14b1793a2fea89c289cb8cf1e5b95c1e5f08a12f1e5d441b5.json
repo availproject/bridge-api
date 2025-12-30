@@ -5,17 +5,18 @@
     "columns": [],
     "parameters": {
       "Left": [
-        "Numeric",
+        "Int8",
         "Text",
         {
           "Custom": {
             "name": "status",
             "kind": {
               "Enum": [
-                "initiated",
+                "bridged",
                 "in_progress",
                 "claim_ready",
-                "bridged"
+                "initialized",
+                "initiated"
               ]
             }
           }
