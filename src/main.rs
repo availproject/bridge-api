@@ -122,9 +122,10 @@ async fn transaction(
         .await
         .map_err(|e| {
             tracing::error!("Cannot get transaction: {e:#}");
-            ErrorResponse::with_status(
+            ErrorResponse::with_status_and_headers(
                 anyhow!("Cannot get transaction"),
                 StatusCode::INTERNAL_SERVER_ERROR,
+                &[("Cache-Control", "public, max-age=60, must-revalidate")],
             )
         })?;
 
@@ -134,9 +135,10 @@ async fn transaction(
         .await
         .map_err(|e| {
             tracing::error!("Cannot get transaction receipt: {e:#}");
-            ErrorResponse::with_status(
+            ErrorResponse::with_status_and_headers(
                 anyhow!("Cannot get transaction receipt"),
                 StatusCode::INTERNAL_SERVER_ERROR,
+                &[("Cache-Control", "public, max-age=60, must-revalidate")],
             )
         })?;
 
@@ -148,9 +150,10 @@ async fn transaction(
     let a = format!("{:x}", amount);
     let av = u128::from_str_radix(&a, 16).map_err(|e| {
         tracing::error!("Cannot parse amount: {e:#}");
-        ErrorResponse::with_status(
-            anyhow!("Cannot fetch valid transaction data"),
+        ErrorResponse::with_status_and_headers(
+            anyhow!("Cannot parse amount."),
             StatusCode::INTERNAL_SERVER_ERROR,
+            &[("Cache-Control", "public, max-age=60, must-revalidate")],
         )
     })?;
 
@@ -185,8 +188,12 @@ async fn transaction(
     .execute(&state.db)
     .await
     .map_err(|e| {
-        warn!("Cannot insert tx {}", e);
-        anyhow!("Cannot insert tx")
+        tracing::error!("Cannot insert tx: {e:#}");
+        ErrorResponse::with_status_and_headers(
+            anyhow!("Cannot insert tx."),
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &[("Cache-Control", "public, max-age=60, must-revalidate")],
+        )
     })?;
 
     Ok(())
