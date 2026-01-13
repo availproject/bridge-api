@@ -397,20 +397,3 @@ impl TransactionData {
         }
     }
 }
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct TransactionRpc {
-    pub from: String,
-    pub to: String,
-    pub input: String,
-    pub value: String,
-    #[serde(deserialize_with = "hex_to_u32")]
-    pub nonce: u32,
-    pub block_hash: String,
-    #[serde(deserialize_with = "hex_to_u32")]
-    pub block_number: u32,
-    #[serde(deserialize_with = "hex_to_u32")]
-    pub transaction_index: u32,
-    pub hash: String,
-}

@@ -360,21 +360,6 @@ RUSTFLAGS="-C target-cpu=native" cargo run --profile maxperf
       }
       ```
 
-
-### Initiate transaction
-
-* To mark transaction as initiated:
-
-    * Request
-
-      `POST /v2/transaction/:tx_hash`
-
-      ```bash
-      # curl <endpoint URL>/v2/transaction/<txHash>
-      curl -X POST \
-      http://localhost:8080/v2/transaction/0x03c6dbd3c24c3f85e05be26d79f2f676f7c7ef4709
-      ```
-
 ### Examples of using bridge api 
 
 *  We have prepared a set of examples written in Rust and Typescript to help you understand how to use bridge api. You can explore these examples by visiting our [code examples repository](https://github.com/availproject/avail-bridge-examples).
