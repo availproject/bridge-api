@@ -1,14 +1,11 @@
 mod models;
-use crate::AvailBridge::{AvailBridgeCalls, AvailBridgeEvents};
 use crate::models::*;
 
 use alloy::primitives::{Address, B256, U256, hex};
 use alloy::providers::ProviderBuilder;
-use alloy::sol_types::{SolEventInterface, SolInterface};
 use anyhow::{Context, Result, anyhow};
 use axum::body::{Body, to_bytes};
 use axum::response::Response;
-use axum::routing::post;
 use axum::{
     Router,
     extract::{Json, Path, Query, State},
@@ -19,11 +16,9 @@ use axum::{
 use backon::ExponentialBuilder;
 use backon::Retryable;
 use chrono::Utc;
-use sp_core::hexdisplay::AsBytesRef;
 
 use crate::models::TxDirection::{AvailEth, EthAvail};
 use alloy::core::sol;
-use alloy::rpc::types::TransactionReceipt;
 use http::Method;
 use jsonrpsee::{
     core::ClientError,
@@ -39,7 +34,6 @@ use sp_core::Decode;
 use sp_io::hashing::twox_128;
 use sqlx::PgPool;
 use std::collections::HashMap;
-use std::str::FromStr;
 use std::sync::Arc;
 use std::{env, process, time::Duration};
 #[cfg(not(target_env = "msvc"))]
@@ -112,94 +106,6 @@ async fn versions(State(_state): State<Arc<AppState>>) -> Result<Json<Value>, St
 }
 
 #[inline(always)]
-async fn transaction(
-    State(state): State<Arc<AppState>>,
-    Path(hash): Path<B256>,
-) -> Result<impl IntoResponse, ErrorResponse> {
-    let tx: TransactionRpc = state
-        .ethereum_client
-        .request("eth_getTransactionByHash", rpc_params![hash])
-        .await
-        .map_err(|e| {
-            tracing::error!("Cannot get transaction: {e:#}");
-            ErrorResponse::with_status_and_headers(
-                anyhow!("Cannot get transaction"),
-                StatusCode::INTERNAL_SERVER_ERROR,
-                &[("Cache-Control", "public, max-age=60, must-revalidate")],
-            )
-        })?;
-
-    let receipt: TransactionReceipt = state
-        .ethereum_client
-        .request("eth_getTransactionReceipt", rpc_params![hash])
-        .await
-        .map_err(|e| {
-            tracing::error!("Cannot get transaction receipt: {e:#}");
-            ErrorResponse::with_status_and_headers(
-                anyhow!("Cannot get transaction receipt"),
-                StatusCode::INTERNAL_SERVER_ERROR,
-                &[("Cache-Control", "public, max-age=60, must-revalidate")],
-            )
-        })?;
-
-    let AvailBridgeCalls::sendAVAIL(call) =
-        AvailBridge::AvailBridgeCalls::abi_decode(hex::decode(tx.input)?.as_bytes_ref())?;
-
-    let recipient = format!("0x{}", hex::encode(*call.recipient));
-    let amount = call.amount;
-    let a = format!("{:x}", amount);
-    let av = u128::from_str_radix(&a, 16).map_err(|e| {
-        tracing::error!("Cannot parse amount: {e:#}");
-        ErrorResponse::with_status_and_headers(
-            anyhow!("Cannot parse amount."),
-            StatusCode::INTERNAL_SERVER_ERROR,
-            &[("Cache-Control", "public, max-age=60, must-revalidate")],
-        )
-    })?;
-
-    let bridge_event_topic =
-        B256::from_str("0x06fd209663be9278f96bc53dfbf6cf3cdcf2172c38b5de30abff93ba443d653a")?;
-
-    let log = receipt
-        .inner
-        .logs()
-        .iter()
-        .find(|log| log.topics().contains(&bridge_event_topic))
-        .ok_or_else(|| anyhow!("Cannot find transaction log"))?
-        .clone()
-        .into();
-
-    let decoded = AvailBridgeEvents::decode_log(&log)?;
-    let AvailBridgeEvents::MessageSent(call) = decoded.data;
-    let message_id: i64 = call.messageId.try_into()?;
-
-    sqlx::query_file!(
-        "sql/insert_tx.sql",
-        message_id,
-        "MessageSent",
-        BridgeStatusEnum::Initiated as BridgeStatusEnum, // cast if needed
-        tx.from,
-        recipient,
-        av.to_string(),
-        tx.block_hash,
-        tx.block_number as i32,
-        tx.hash
-    )
-    .execute(&state.db)
-    .await
-    .map_err(|e| {
-        tracing::error!("Cannot insert tx: {e:#}");
-        ErrorResponse::with_status_and_headers(
-            anyhow!("Cannot insert tx."),
-            StatusCode::INTERNAL_SERVER_ERROR,
-            &[("Cache-Control", "public, max-age=60, must-revalidate")],
-        )
-    })?;
-
-    Ok(())
-}
-
-#[inline(always)]
 async fn transactions(
     Query(address_query): Query<TransactionQueryParams>,
     State(state): State<Arc<AppState>>,
@@ -261,7 +167,7 @@ async fn transactions(
                 tx.amount,
                 tx.final_status,
                 estimate,
-                None,
+                Some(tx.source_block_height),
                 None,
                 tx.destination_block_height,
                 tx.destination_tx_index,
@@ -321,8 +227,8 @@ async fn transactions(
                 tx.amount,
                 tx.final_status,
                 estimate,
-                Some(tx.source_tx_index),
                 Some(tx.source_block_height),
+                Some(tx.source_tx_index),
                 None,
                 None,
                 tx.destination_tx_hash,
@@ -337,7 +243,7 @@ async fn fetch_range_blocks(
     state: &Arc<AppState>,
 ) -> Result<RangeBlocksAPIResponse, ErrorResponse> {
     let block_range_url = format!(
-        "{}/api/{}?chainName={}&contractChainId={}&contractAddress={}",
+        "{}/{}?chainName={}&contractChainId={}&contractAddress={}",
         state.merkle_proof_service_base_url,
         "range",
         state.avail_chain_name,
@@ -1023,7 +929,6 @@ async fn main() {
         .route("/", get(alive))
         .route("/versions", get(versions))
         .route("/v1/info", get(info))
-        .route("/v2/transaction/{txHash}", post(transaction))
         .route("/v1/eth/proof/{block_hash}", get(get_eth_proof)) // get proof from avail for ethereum
         .route("/v1/eth/head", get(get_eth_head)) // fetch head form eth contract
         .route("/v1/avl/head", get(get_avl_head)) // fetch head form avail pallet
