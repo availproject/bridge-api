@@ -328,7 +328,7 @@ async fn get_eth_proof(
         .map_err(|e| {
             tracing::error!("❌ Failed to get the kate query data. Error: {e:#}");
             ErrorResponse::with_status_and_headers(
-                anyhow::anyhow!("Something went wrong."),
+                anyhow::anyhow!("Failed to get the kate query data."),
                 StatusCode::BAD_REQUEST,
                 &[("Cache-Control", "public, max-age=60, must-revalidate")],
             )
@@ -338,7 +338,7 @@ async fn get_eth_proof(
         .map_err(|e| {
             tracing::error!("❌ Failed to get the merkle proof data. Error: {e:#}");
             ErrorResponse::with_status_and_headers(
-                anyhow::anyhow!("Something went wrong."),
+                anyhow::anyhow!("Failed to get the merkle proof data."),
                 StatusCode::INTERNAL_SERVER_ERROR,
                 &[("Cache-Control", "public, max-age=60, must-revalidate")],
             )
@@ -361,22 +361,30 @@ async fn get_eth_proof(
             ..
         } => {
             if data.contains("not in the range of blocks") {
-                tracing::warn!(
+                warn!(
                     "⏳ Merkle proof VectorX contract not updated yet! Response: {}",
                     data
                 );
+
+                return Err(ErrorResponse::with_status_and_headers(
+                    anyhow!("VectorX contract not updated yet!"),
+                    StatusCode::NOT_FOUND,
+                    &[(
+                        "Cache-Control",
+                        &format!(
+                            "public, max-age={eth_proof_failure_cache_maxage}, must-revalidate"
+                        ),
+                    )],
+                ));
             } else {
                 tracing::error!("❌ Merkle API returned unsuccessfully. Response: {}", data);
-            }
 
-            return Err(ErrorResponse::with_status_and_headers(
-                anyhow!("{data}"),
-                StatusCode::NOT_FOUND,
-                &[(
-                    "Cache-Control",
-                    &format!("public, max-age={eth_proof_failure_cache_maxage}, must-revalidate"),
-                )],
-            ));
+                return Err(ErrorResponse::with_status_and_headers(
+                    anyhow::anyhow!("Something went wrong."),
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    &[("Cache-Control", "public, max-age=60, must-revalidate")],
+                ));
+            }
         }
 
         _ => {
