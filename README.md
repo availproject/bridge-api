@@ -302,11 +302,11 @@ RUSTFLAGS="-C target-cpu=native" cargo run --profile maxperf
 
     * Request
 
-      `GET /v2/transactions?availAddress=0x1a985fdff5f6eee4afce1dc0f367ab925cdca57e7e8585329830fc3ce6ef4e7a&ethAddress=0x48e7e157cf873c15a5a6734ea37c000e1cb2383d`
+      `GET /v1/transactions?availAddress=0x1a985fdff5f6eee4afce1dc0f367ab925cdca57e7e8585329830fc3ce6ef4e7a&ethAddress=0x48e7e157cf873c15a5a6734ea37c000e1cb2383d`
 
       ```bash
-      # curl <endpoint URL>/v2/transactions?ethAddress=<availAddress>&ethAddress=<ethAddress>
-      curl localhost:8080/v2/transactions?availAddress=0x1a985fdff5f6eee4afce1dc0f367ab925cdca57e7e8585329830fc3ce6ef4e7a&ethAddress=0x48e7e157cf873c15a5a6734ea37c000e1cb2383d
+      # curl <endpoint URL>/v1/transactions?ethAddress=<availAddress>&ethAddress=<ethAddress>
+      curl localhost:8080/v1/transactions?availAddress=0x1a985fdff5f6eee4afce1dc0f367ab925cdca57e7e8585329830fc3ce6ef4e7a&ethAddress=0x48e7e157cf873c15a5a6734ea37c000e1cb2383d
       ```
 
       * Response
