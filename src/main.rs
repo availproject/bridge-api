@@ -166,6 +166,7 @@ async fn transactions(
                 tx.source_transaction_hash,
                 tx.amount,
                 tx.final_status,
+                tx.timestamp,
                 estimate,
                 Some(tx.source_block_height),
                 None,
@@ -226,6 +227,7 @@ async fn transactions(
                 tx.source_transaction_hash,
                 tx.amount,
                 tx.final_status,
+                tx.block_timestamp,
                 estimate,
                 Some(tx.source_block_height),
                 Some(tx.source_tx_index),
@@ -235,6 +237,8 @@ async fn transactions(
             ));
         }
     }
+
+    transaction_data_results.sort_unstable_by(|a, b| b.timestamp.cmp(&a.timestamp));
 
     Ok(Json(json!(transaction_data_results)))
 }

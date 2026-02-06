@@ -5,6 +5,7 @@ SELECT be.message_id,
        be.source_block_hash,
        be.source_transaction_hash,
        be.block_number as source_block_height,
+       be.timestamp,
        ai.block_height as "destination_block_height?: i32",
        ai.ext_index    as "destination_tx_index?: i32",
        COALESCE(
@@ -23,6 +24,5 @@ WHERE be.sender = $1
     AND be.event_type = $2
     AND (ai.ext_success = $3
    OR ai.ext_success is null)
-
-ORDER BY be.message_id DESC
-limit 1000
+ORDER BY be.timestamp DESC
+LIMIT 1000
