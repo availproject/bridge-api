@@ -1,6 +1,6 @@
 # Bridge API
 
-The bridge API is a REST API for fetching proofs from Avail's Kate RPC and Succinct API to submit on Ethereum or
+The bridge API is a REST API for fetching proofs from Avail's Kate RPC and Merkle proof service API to submit on Ethereum or
 any off-chain proof verification.
 
 ## Deploying the bridge API
@@ -309,48 +309,34 @@ RUSTFLAGS="-C target-cpu=native" cargo run --profile maxperf
       curl localhost:8080/v1/transactions?availAddress=0x1a985fdff5f6eee4afce1dc0f367ab925cdca57e7e8585329830fc3ce6ef4e7a&ethAddress=0x48e7e157cf873c15a5a6734ea37c000e1cb2383d
       ```
 
-    * Response
+      * Response
 
-      ```json
-      {
-        "availSend": [
+        ```json
+        [
             {
-              "amount": "10000000000000000",
-              "depositorAddress": "0x1a985fdff5f6eee4afce1dc0f367ab925cdca57e7e8585329830fc3ce6ef4e7a",
-              "destinationBlockHash": null,
-              "destinationBlockNumber": null,
-              "destinationTimestamp": null,
-              "messageId": 106695577567233,
-              "receiverAddress": "0x8d31529525f23b14767d4dde78567ca083d3d56f",
-              "sourceBlockHash": "0x9cd91b1bd5497d96a98cf20e1563df29d85b8444d906a64a40980629e1288d70",
-              "sourceBlockNumber": 24842,
-              "sourceTimestamp": "2024-04-23T08:15:40",
-              "sourceTransactionHash": "0x9cd91b1bd5497d96a98cf20e1563df29d85b8444d906a64a40980629e1288d70",
-              "sourceTransactionIndex": 1,
-              "status": "claimPending",
-              "tokenId": "0x0000000000000000000000000000000000000000000000000000000000000000"
-            }
-          ],
-         "ethSend": [
+              "amount": "200000000000000000000000",
+              "claimEstimate": 3284,
+              "direction": "EthAvail",
+              "messageId": 1771,
+              "receiver": "0xc2b6ddd8382bcb813753562adb3d30cda40369750401b195dbabc6ac9bce620c",
+              "sender": "0xc1b2aff52877b4a23422f554f3d240be50ec80cf",
+              "sourceBlockHash": "0x1b18ad7d42e941b5df80585c2674aa9cd70cca6312dcca6374237b512e59ad7a",
+              "sourceTxHash": "0x3d4fa0e38bae95ad0a512def7c8d19174ecb943fe6a49fab55682ec6f89ab60a",
+              "status": "InProgress"
+            },
             {
-              "amount": "10000000000000000",
-              "depositorAddress": "0x48e7e157cf873c15a5a6734ea37c000e1cb2383d",
-              "destinationBlockHash": "0xb52bdaf649c84fdccdf2e18aac13e18b0a67ceca11e23bfb94e6476cab23eb38",
-              "destinationBlockNumber": 22650,
-              "destinationTimestamp": "2024-04-22T20:03:40",
-              "destinationTransactionIndex": 1,
-              "messageId": 311,
-              "receiverAddress": "0x1a985fdff5f6eee4afce1dc0f367ab925cdca57e7e8585329830fc3ce6ef4e7a",
-              "sourceBlockHash": "0x463b0853f65f7a80c4c8ca188c37eb9589fb42cfe327bc1736ce02245bc045e8",
-              "sourceBlockNumber": 5755158,
-              "sourceTimestamp": "2024-04-22T19:40:24",
-              "sourceTransactionHash": "0xcf7945f68d7544a81eb8c32a794e97e229da3535aebd5488a4404f0a1093f29c",
-              "status": "bridged",
-              "tokenId": "0x0000000000000000000000000000000000000000000000000000000000000000"
+              "amount": "189766320000000000000000",
+              "claimEstimate": 3284,
+              "direction": "EthAvail",
+              "messageId": 1751,
+              "receiver": "0xc2b6ddd8382bcb813753562adb3d30cda40369750401b195dbabc6ac9bce620c",
+              "sender": "0xc1b2aff52877b4a23422f554f3d240be50ec80cf",
+              "sourceBlockHash": "0x207a0be28232e64fb984ac0ad1ea6e79cb32bbbf8217962277a4b2c9bc802997",
+              "sourceTxHash": "0xd060a6b7f8946bd0c8c8fb1bedf58f81a5745c250ef800e1bc18b00d57c79013",
+              "status": "InProgress"
             }
-          ]
-        }
-      ```
+        ]
+        ```
 
 ### Map slot to Ethereum block number (Deprecated)
 

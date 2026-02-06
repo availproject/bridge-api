@@ -1,14 +1,9 @@
 mod models;
-mod schema;
+use crate::models::*;
 
-use crate::models::{AvailSend, EthereumSend, StatusEnum};
-use crate::schema::avail_sends::dsl::avail_sends;
-use crate::schema::ethereum_sends::dsl::ethereum_sends;
 use alloy::primitives::{Address, B256, U256, hex};
 use alloy::providers::ProviderBuilder;
-use alloy::sol;
 use anyhow::{Context, Result, anyhow};
-use avail_core::data_proof::AddressedMessage;
 use axum::body::{Body, to_bytes};
 use axum::response::Response;
 use axum::{
@@ -20,12 +15,11 @@ use axum::{
 };
 use backon::ExponentialBuilder;
 use backon::Retryable;
-use chrono::{NaiveDateTime, Utc};
-use diesel::{
-    ExpressionMethods, PgConnection, QueryDsl, RunQueryDsl, SelectableHelper, r2d2,
-    r2d2::ConnectionManager,
-};
-use http::{HeaderMap, HeaderName, HeaderValue, Method};
+use chrono::Utc;
+
+use crate::models::TxDirection::{AvailEth, EthAvail};
+use alloy::core::sol;
+use http::Method;
 use jsonrpsee::{
     core::ClientError,
     core::client::ClientT,
@@ -34,12 +28,11 @@ use jsonrpsee::{
 };
 use lazy_static::lazy_static;
 use reqwest::Client;
-use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::{Value, json};
-use serde_with::serde_as;
 use sha3::{Digest, Keccak256};
-use sp_core::{Decode, H160, H256};
+use sp_core::Decode;
 use sp_io::hashing::twox_128;
+use sqlx::PgPool;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::{env, process, time::Duration};
@@ -52,315 +45,45 @@ use tower_http::{
     cors::{Any, CorsLayer},
     trace::TraceLayer,
 };
+use tracing::{info, warn};
 use tracing_subscriber::prelude::*;
+
+sol! {
+    #[derive(Debug)]
+    contract AvailBridge {
+        function sendAVAIL(bytes32 recipient, uint256 amount) external;
+        event MessageSent(address indexed from, bytes32 indexed to, uint256 messageId);
+    }
+}
 
 #[cfg(not(target_env = "msvc"))]
 #[global_allocator]
 static GLOBAL: Jemalloc = Jemalloc;
 
-sol!(
-    #[allow(missing_docs)]
-    #[sol(rpc)]
-    SP1Vector,
-    "src/abi/SP1Vector.json"
-);
-
-#[derive(Debug, Deserialize)]
-struct Root {
-    data: Data,
-}
-
-#[derive(Debug, Deserialize)]
-struct Data {
-    message: Message,
-}
-
-#[derive(Debug, Deserialize)]
-struct Message {
-    slot: String,
-    body: MessageBody,
-}
-
-#[derive(Debug, Deserialize)]
-struct MessageBody {
-    execution_payload: ExecutionPayload,
-}
-
-#[derive(Debug, Deserialize)]
-struct ExecutionPayload {
-    block_number: String,
-    block_hash: String,
-}
-
-struct ErrorResponse {
-    pub error: anyhow::Error,
-    pub headers_keypairs: Vec<(String, String)>,
-    pub status_code: Option<StatusCode>,
-}
-
-impl ErrorResponse {
-    pub fn new(error: anyhow::Error) -> Self {
-        Self {
-            error,
-            headers_keypairs: vec![],
-            status_code: None,
-        }
-    }
-    pub fn with_status(error: anyhow::Error, status_code: StatusCode) -> Self {
-        Self {
-            error,
-            headers_keypairs: vec![],
-            status_code: Some(status_code),
-        }
-    }
-
-    pub fn with_status_and_headers(
-        error: anyhow::Error,
-        status_code: StatusCode,
-        headers: &[(&str, &str)],
-    ) -> Self {
-        let h = headers
-            .iter()
-            .map(|(k, v)| (k.to_string(), v.to_string()))
-            .collect::<Vec<_>>();
-        Self {
-            error,
-            headers_keypairs: h,
-            status_code: Some(status_code),
-        }
-    }
-}
-
-// Tell axum how to convert `AppError` into a response.
-impl IntoResponse for ErrorResponse {
-    fn into_response(self) -> Response {
-        let status = self
-            .status_code
-            .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
-        let mut headermap = HeaderMap::new();
-        for (k, v) in self.headers_keypairs {
-            headermap.insert(
-                HeaderName::try_from(k).unwrap(),
-                HeaderValue::try_from(v).unwrap(),
-            );
-        }
-        let json_resp = Json(json!({"error" : format!("{:#}", self.error)}));
-
-        (status, headermap, json_resp).into_response()
-    }
-}
-
-// This enables using `?` on functions that return `Result<_, anyhow::Error>` to turn them into
-// `Result<_, AppError>`. That way you don't need to do that manually.
-impl<E> From<E> for ErrorResponse
-where
-    E: Into<anyhow::Error>,
-{
-    fn from(err: E) -> Self {
-        Self {
-            error: err.into(),
-            headers_keypairs: vec![],
-            status_code: None,
-        }
-    }
-}
-
 #[derive(Debug)]
-struct AppState {
-    avail_client: HttpClient,
-    ethereum_client: HttpClient,
-    request_client: Client,
-    succinct_base_url: String,
-    beaconchain_base_url: String,
-    avail_chain_name: String,
-    contract_chain_id: String,
-    contract_address: String,
-    bridge_contract_address: String,
-    eth_head_cache_maxage: u16,
-    avl_head_cache_maxage: u16,
-    head_cache_maxage: u16,
-    avl_proof_cache_maxage: u32,
-    eth_proof_cache_maxage: u32,
-    proof_cache_maxage: u32,
-    eth_proof_failure_cache_maxage: u32,
-    slot_mapping_cache_maxage: u32,
-    transactions_cache_maxage: u32,
-    connection_pool: r2d2::Pool<ConnectionManager<PgConnection>>,
-    chains: HashMap<u64, Chain>,
-}
-
-#[derive(Debug)]
-struct Chain {
-    rpc_url: String,
-    contract_address: Address,
-}
-
-#[derive(Deserialize)]
-struct IndexStruct {
-    index: u32,
-}
-
-#[derive(Deserialize)]
-struct ProofQueryStruct {
-    index: u32,
-    block_hash: B256,
-}
-
-#[derive(Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct KateQueryDataProofResponse {
-    data_proof: DataProof,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    message: Option<AddressedMessage>,
-}
-
-#[derive(Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct DataProof {
-    roots: Roots,
-    proof: Vec<B256>,
-    leaf_index: u32,
-    leaf: B256,
-}
-
-#[derive(Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct Roots {
-    data_root: B256,
-    blob_root: B256,
-    bridge_root: B256,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct AccountStorageProofResponse {
-    account_proof: Vec<String>,
-    storage_proof: Vec<StorageProof>,
-}
-
-#[derive(Deserialize)]
-struct StorageProof {
-    proof: Vec<String>,
-}
-
-#[derive(Deserialize)]
-struct SuccinctAPIResponse {
-    data: Option<SuccinctAPIData>,
-    error: Option<String>,
-    success: Option<bool>,
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct SlotMappingResponse {
-    block_hash: String,
-    block_number: String,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct SuccinctAPIData {
-    range_hash: B256,
-    data_commitment: B256,
-    merkle_branch: Vec<B256>,
-    index: u16,
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct AggregatedResponse {
-    data_root_proof: Vec<B256>,
-    leaf_proof: Vec<B256>,
-    range_hash: B256,
-    data_root_index: u16,
-    leaf: B256,
-    leaf_index: u32,
-    data_root: B256,
-    blob_root: B256,
-    bridge_root: B256,
-    data_root_commitment: B256,
-    block_hash: B256,
-    message: Option<AddressedMessage>,
-}
-
-impl AggregatedResponse {
-    pub fn new(
-        range_data: SuccinctAPIData,
-        data_proof_res: KateQueryDataProofResponse,
-        hash: B256,
-    ) -> Self {
-        AggregatedResponse {
-            data_root_proof: range_data.merkle_branch,
-            leaf_proof: data_proof_res.data_proof.proof,
-            range_hash: range_data.range_hash,
-            data_root_index: range_data.index,
-            leaf: data_proof_res.data_proof.leaf,
-            leaf_index: data_proof_res.data_proof.leaf_index,
-            data_root: data_proof_res.data_proof.roots.data_root,
-            blob_root: data_proof_res.data_proof.roots.blob_root,
-            bridge_root: data_proof_res.data_proof.roots.bridge_root,
-            data_root_commitment: range_data.data_commitment,
-            block_hash: hash,
-            message: data_proof_res.message,
-        }
-    }
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct EthProofResponse {
-    account_proof: Vec<String>,
-    storage_proof: Vec<String>,
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct HeadResponseV2 {
-    pub slot: u64,
-    pub block_number: u64,
-    pub block_hash: B256,
-    pub timestamp: u64,
-    pub timestamp_diff: u64,
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct HeadResponseLegacy {
-    pub slot: u64,
-    pub timestamp: u64,
-    pub timestamp_diff: u64,
-}
-
-#[derive(Serialize, Deserialize)]
-struct ChainHeadResponse {
-    pub head: u32,
-}
-
-#[derive(Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct RangeBlocks {
-    start: u32,
-    end: u32,
-}
-
-#[derive(Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct RangeBlocksAPIResponse {
-    data: RangeBlocks,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct HeaderBlockNumber {
-    #[serde(deserialize_with = "hex_to_u32")]
-    pub number: u32,
-}
-
-fn hex_to_u32<'de, D>(deserializer: D) -> Result<u32, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    let s: &str = Deserialize::deserialize(deserializer)?;
-    u32::from_str_radix(s.trim_start_matches("0x"), 16).map_err(serde::de::Error::custom)
+pub struct AppState {
+    pub avail_client: HttpClient,
+    pub ethereum_client: HttpClient,
+    pub request_client: Client,
+    pub merkle_proof_service_base_url: String,
+    pub beaconchain_base_url: String,
+    pub avail_chain_name: String,
+    pub contract_chain_id: String,
+    pub contract_address: String,
+    pub bridge_contract_address: String,
+    pub eth_head_cache_maxage: u16,
+    pub avl_head_cache_maxage: u16,
+    pub head_cache_maxage: u16,
+    pub avl_proof_cache_maxage: u32,
+    pub eth_proof_cache_maxage: u32,
+    pub proof_cache_maxage: u32,
+    pub eth_proof_failure_cache_maxage: u32,
+    pub slot_mapping_cache_maxage: u32,
+    pub transactions_cache_maxage: u32,
+    pub db: PgPool,
+    pub chains: HashMap<u64, Chain>,
+    pub helios_update_frequency: u32,
+    pub vector_update_frequency: u32,
 }
 
 async fn alive() -> Result<Json<Value>, StatusCode> {
@@ -382,91 +105,14 @@ async fn versions(State(_state): State<Arc<AppState>>) -> Result<Json<Value>, St
     Ok(Json(json!(["v1"])))
 }
 
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct TransactionQueryParams {
-    eth_address: Option<H160>,
-    avail_address: Option<H256>,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-#[serde_as]
-#[serde(rename_all = "camelCase")]
-pub struct TransactionData {
-    pub message_id: i64,
-    pub status: StatusEnum,
-    pub source_transaction_hash: String,
-    pub source_block_number: i64,
-    pub source_block_hash: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub source_transaction_index: Option<i64>,
-    #[serde_as(as = "TimestampSeconds")]
-    pub source_timestamp: NaiveDateTime,
-    pub token_id: String,
-    pub destination_block_number: Option<i64>,
-    pub destination_block_hash: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub destination_transaction_index: Option<i64>,
-    #[serde_as(as = "Option<TimestampSeconds>")]
-    pub destination_timestamp: Option<NaiveDateTime>,
-    pub depositor_address: String,
-    pub receiver_address: String,
-    pub amount: String,
-}
-
-#[derive(Debug, Default, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct TransactionResult {
-    pub avail_send: Vec<TransactionData>,
-    pub eth_send: Vec<TransactionData>,
-}
-
-fn map_ethereum_send_to_transaction_result(send: EthereumSend) -> TransactionData {
-    TransactionData {
-        message_id: send.message_id,
-        status: send.status,
-        source_transaction_hash: send.source_transaction_hash,
-        source_block_number: send.source_block_number,
-        source_block_hash: send.source_block_hash,
-        source_transaction_index: None,
-        source_timestamp: send.source_timestamp,
-        token_id: send.token_id,
-        destination_block_number: send.destination_block_number,
-        destination_block_hash: send.destination_block_hash,
-        destination_transaction_index: send.destination_transaction_index,
-        destination_timestamp: send.destination_timestamp,
-        depositor_address: send.depositor_address,
-        receiver_address: send.receiver_address,
-        amount: send.amount,
-    }
-}
-
-// Function to map AvailSend to TransactionResult
-fn map_avail_send_to_transaction_result(send: AvailSend) -> TransactionData {
-    TransactionData {
-        message_id: send.message_id,
-        status: send.status,
-        source_transaction_hash: send.source_transaction_hash,
-        source_block_number: send.source_block_number,
-        source_block_hash: send.source_block_hash,
-        source_transaction_index: Some(send.source_transaction_index),
-        source_timestamp: send.source_timestamp,
-        token_id: send.token_id,
-        destination_block_number: send.destination_block_number,
-        destination_block_hash: send.destination_block_hash,
-        destination_transaction_index: None,
-        destination_timestamp: send.destination_timestamp,
-        depositor_address: send.depositor_address,
-        receiver_address: send.receiver_address,
-        amount: send.amount,
-    }
-}
-
 #[inline(always)]
 async fn transactions(
     Query(address_query): Query<TransactionQueryParams>,
     State(state): State<Arc<AppState>>,
 ) -> Result<impl IntoResponse, ErrorResponse> {
+    info!("Transaction query: {:?}", address_query);
+
+    // check provided params
     if address_query.eth_address.is_none() && address_query.avail_address.is_none() {
         tracing::error!("Query params not provided.");
         return Err(ErrorResponse::with_status_and_headers(
@@ -476,72 +122,165 @@ async fn transactions(
         ));
     }
 
-    let cloned_state = state.clone();
-    let mut conn = cloned_state
-        .connection_pool
-        .get_timeout(Duration::from_secs(1))
-        .expect("Get connection pool");
+    let mut transaction_data_results: Vec<TransactionData> = vec![];
 
-    // Initialize the result variables
-    let mut transaction_results: TransactionResult = TransactionResult::default();
-
-    // Return the combined results
     if let Some(eth_address) = address_query.eth_address {
-        let ethereum_sends_results = ethereum_sends
-            .select(EthereumSend::as_select())
-            .filter(schema::ethereum_sends::depositor_address.eq(format!("{:?}", eth_address)))
-            .order_by(schema::ethereum_sends::source_timestamp.desc())
-            .limit(500)
-            .load::<EthereumSend>(&mut conn);
+        let transactions: Vec<EthTransactionRow> = sqlx::query_file_as!(
+            EthTransactionRow,
+            "sql/query_eth_tx.sql",
+            format!("{:?}", eth_address),
+            "MessageSent",
+            true
+        )
+        .fetch_all(&state.db)
+        .await?;
 
-        transaction_results.eth_send = ethereum_sends_results
-            .map_err(|e| {
-                tracing::error!("Cannot get ethereum send transactions:: {e:#}");
-                ErrorResponse::with_status_and_headers(
-                    e.into(),
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    &[("Cache-Control", "public, max-age=60, must-revalidate")],
-                )
-            })?
-            .into_iter()
-            .map(map_ethereum_send_to_transaction_result)
-            .collect();
+        let slot_block_head = SLOT_BLOCK_HEAD.read().await;
+        let (_slot, last_eth_block, _hash, helios_update_timestamp) =
+            slot_block_head.as_ref().ok_or_else(|| {
+                ErrorResponse::with_status(anyhow!("Not found"), StatusCode::INTERNAL_SERVER_ERROR)
+            })?;
+
+        let claim_estimate =
+            time_until_next_helios_update(*helios_update_timestamp, state.helios_update_frequency);
+
+        for mut tx in transactions {
+            let mut estimate = None;
+            if tx.final_status != BridgeStatusEnum::Bridged
+                && tx.source_block_height <= (*last_eth_block) as i32
+            {
+                // safe cast
+                tx.final_status = BridgeStatusEnum::ClaimReady
+            } else if tx.final_status != BridgeStatusEnum::Bridged
+                && tx.final_status != BridgeStatusEnum::ClaimReady
+            {
+                estimate = Some(claim_estimate.as_secs());
+            }
+
+            transaction_data_results.push(TransactionData::new(
+                EthAvail,
+                tx.message_id,
+                tx.sender,
+                tx.receiver,
+                tx.source_block_hash,
+                tx.source_transaction_hash,
+                tx.amount,
+                tx.final_status,
+                tx.timestamp,
+                estimate,
+                Some(tx.source_block_height),
+                None,
+                tx.destination_block_height,
+                tx.destination_tx_index,
+                None,
+            ));
+        }
     }
 
     if let Some(avail_address) = address_query.avail_address {
-        let avail_sends_results = avail_sends
-            .select(AvailSend::as_select())
-            .filter(schema::avail_sends::depositor_address.eq(format!("{:?}", avail_address)))
-            .order_by(schema::avail_sends::source_timestamp.desc())
-            .limit(500)
-            .load::<AvailSend>(&mut conn);
+        let transactions: Vec<AvailTransactionRow> = sqlx::query_file_as!(
+            AvailTransactionRow,
+            "sql/query_avail_tx.sql",
+            avail_address,
+            "FungibleToken",
+            "MessageReceived",
+            true
+        )
+        .fetch_all(&state.db)
+        .await?;
 
-        transaction_results.avail_send = avail_sends_results
-            .map_err(|e| {
-                tracing::error!("Cannot get avail send transactions: {e:#}");
-                ErrorResponse::with_status_and_headers(
-                    e.into(),
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    &[("Cache-Control", "public, max-age=60, must-revalidate")],
-                )
-            })?
-            .into_iter()
-            .map(map_avail_send_to_transaction_result)
-            .collect();
+        let range_blocks = fetch_range_blocks(&state).await?;
+
+        let avail_finalized_block: u32 = state
+            .avail_client
+            .request("chain_getFinalizedHead", rpc_params![])
+            .await
+            .context("finalized head")
+            .unwrap_or(0);
+
+        let claim_estimate = time_until_next_vector_update(
+            avail_finalized_block,
+            range_blocks.data.end,
+            state.vector_update_frequency,
+            20,
+        );
+
+        for mut tx in transactions {
+            let mut estimate = None;
+
+            if tx.final_status == BridgeStatusEnum::InProgress
+                && tx.source_block_height < range_blocks.data.end as i32
+            {
+                tx.final_status = BridgeStatusEnum::ClaimReady;
+            } else if tx.final_status == BridgeStatusEnum::Initiated
+                || tx.final_status == BridgeStatusEnum::InProgress
+            {
+                estimate = Some(claim_estimate.as_secs());
+            }
+
+            transaction_data_results.push(TransactionData::new(
+                AvailEth,
+                tx.message_id,
+                tx.sender.unwrap_or("".to_string()), // cannot be empty because of where clause
+                tx.receiver,
+                tx.source_block_hash,
+                tx.source_transaction_hash,
+                tx.amount,
+                tx.final_status,
+                tx.block_timestamp,
+                estimate,
+                Some(tx.source_block_height),
+                Some(tx.source_tx_index),
+                None,
+                None,
+                tx.destination_tx_hash,
+            ));
+        }
     }
 
-    Ok((
-        StatusCode::OK,
-        [(
-            "Cache-Control",
-            format!(
-                "public, max-age={}, immutable",
-                state.transactions_cache_maxage
-            ),
-        )],
-        Json(json!(transaction_results)),
-    )
-        .into_response())
+    transaction_data_results.sort_unstable_by(|a, b| b.timestamp.cmp(&a.timestamp));
+
+    Ok(Json(json!(transaction_data_results)))
+}
+
+async fn fetch_range_blocks(
+    state: &Arc<AppState>,
+) -> Result<RangeBlocksAPIResponse, ErrorResponse> {
+    let block_range_url = format!(
+        "{}/{}?chainName={}&contractChainId={}&contractAddress={}",
+        state.merkle_proof_service_base_url,
+        "range",
+        state.avail_chain_name,
+        state.contract_chain_id,
+        state.contract_address
+    );
+
+    let response = state
+        .request_client
+        .get(block_range_url)
+        .send()
+        .await
+        .map_err(|e| {
+            tracing::error!("Cannot parse range blocks: {e:#}");
+            ErrorResponse::with_status_and_headers(
+                anyhow!("{e:#}"),
+                StatusCode::INTERNAL_SERVER_ERROR,
+                &[("Cache-Control", "public, max-age=60, must-revalidate")],
+            )
+        })?;
+
+    let range_blocks = response
+        .json::<RangeBlocksAPIResponse>()
+        .await
+        .map_err(|e| {
+            tracing::error!("Cannot parse range blocks: {e:#}");
+            ErrorResponse::with_status_and_headers(
+                anyhow!("{e:#}"),
+                StatusCode::INTERNAL_SERVER_ERROR,
+                &[("Cache-Control", "public, max-age=60, must-revalidate")],
+            )
+        })?;
+    Ok(range_blocks)
 }
 
 #[inline(always)]
@@ -565,21 +304,22 @@ async fn get_eth_proof(
     let eth_proof_failure_cache_maxage = state.eth_proof_failure_cache_maxage;
     let url = format!(
         "{}?chainName={}&contractChainId={}&contractAddress={}&blockHash={}",
-        state.succinct_base_url,
+        state.merkle_proof_service_base_url,
         state.avail_chain_name,
         state.contract_chain_id,
         state.contract_address,
         block_hash
     );
 
-    let succinct_response_fut = tokio::spawn(async move {
-        let succinct_response = state.request_client.get(url).send().await;
-        match succinct_response {
-            Ok(resp) => resp.json::<SuccinctAPIResponse>().await,
+    let mekrle_proof_response_fut = tokio::spawn(async move {
+        let merkle_proof_response = state.request_client.get(url).send().await;
+        match merkle_proof_response {
+            Ok(resp) => resp.json::<MekrleProofAPIResponse>().await,
             Err(err) => Err(err),
         }
     });
-    let (data_proof, succinct_response) = join!(data_proof_response_fut, succinct_response_fut);
+    let (data_proof, merkle_proof_response) =
+        join!(data_proof_response_fut, mekrle_proof_response_fut);
     let data_proof_res: KateQueryDataProofResponse = data_proof
         .map_err(|e| {
             tracing::error!("❌ Failed to fetch the kate query data. Error: {e:#}");
@@ -592,17 +332,17 @@ async fn get_eth_proof(
         .map_err(|e| {
             tracing::error!("❌ Failed to get the kate query data. Error: {e:#}");
             ErrorResponse::with_status_and_headers(
-                anyhow::anyhow!("Something went wrong."),
+                anyhow::anyhow!("Failed to get the kate query data."),
                 StatusCode::BAD_REQUEST,
                 &[("Cache-Control", "public, max-age=60, must-revalidate")],
             )
         })?;
 
-    let succinct_data = succinct_response
+    let merkle_proof_data = merkle_proof_response
         .map_err(|e| {
             tracing::error!("❌ Failed to get the merkle proof data. Error: {e:#}");
             ErrorResponse::with_status_and_headers(
-                anyhow::anyhow!("Something went wrong."),
+                anyhow::anyhow!("Failed to get the merkle proof data."),
                 StatusCode::INTERNAL_SERVER_ERROR,
                 &[("Cache-Control", "public, max-age=60, must-revalidate")],
             )
@@ -615,41 +355,46 @@ async fn get_eth_proof(
                 &[("Cache-Control", "public, max-age=60, must-revalidate")],
             )
         })?;
-    let succinct_data = match succinct_data {
-        SuccinctAPIResponse {
+    let merkle_data = match merkle_proof_data {
+        MekrleProofAPIResponse {
             data: Some(data), ..
         } => data,
-        SuccinctAPIResponse {
+        MekrleProofAPIResponse {
             success: Some(false),
             error: Some(data),
             ..
         } => {
             if data.contains("not in the range of blocks") {
-                tracing::warn!(
-                    "⏳ Succinct VectorX contract not updated yet! Response: {}",
+                warn!(
+                    "⏳ Merkle proof VectorX contract not updated yet! Response: {}",
                     data
                 );
-            } else {
-                tracing::error!(
-                    "❌ Succinct API returned unsuccessfully. Response: {}",
-                    data
-                );
-            }
 
-            return Err(ErrorResponse::with_status_and_headers(
-                anyhow!("{data}"),
-                StatusCode::NOT_FOUND,
-                &[(
-                    "Cache-Control",
-                    &format!("public, max-age={eth_proof_failure_cache_maxage}, must-revalidate"),
-                )],
-            ));
+                return Err(ErrorResponse::with_status_and_headers(
+                    anyhow!("VectorX contract not updated yet!"),
+                    StatusCode::NOT_FOUND,
+                    &[(
+                        "Cache-Control",
+                        &format!(
+                            "public, max-age={eth_proof_failure_cache_maxage}, must-revalidate"
+                        ),
+                    )],
+                ));
+            } else {
+                tracing::error!("❌ Merkle API returned unsuccessfully. Response: {}", data);
+
+                return Err(ErrorResponse::with_status_and_headers(
+                    anyhow::anyhow!("Something went wrong."),
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    &[("Cache-Control", "public, max-age=60, must-revalidate")],
+                ));
+            }
         }
 
         _ => {
-            tracing::error!("❌ Succinct API returned no data");
+            tracing::error!("❌ Merkle proof API returned no data");
             return Err(ErrorResponse::with_status_and_headers(
-                anyhow!("Succinct API returned no data"),
+                anyhow!("Merkle proof API returned no data"),
                 StatusCode::NOT_FOUND,
                 &[("Cache-Control", "public, max-age=60, must-revalidate")],
             ));
@@ -663,16 +408,16 @@ async fn get_eth_proof(
             format!("public, max-age={}, immutable", eth_proof_cache_maxage),
         )],
         Json(json!(AggregatedResponse {
-            data_root_proof: succinct_data.merkle_branch,
+            data_root_proof: merkle_data.merkle_branch,
             leaf_proof: data_proof_res.data_proof.proof,
-            range_hash: succinct_data.range_hash,
-            data_root_index: succinct_data.index,
+            range_hash: merkle_data.range_hash,
+            data_root_index: merkle_data.index,
             leaf: data_proof_res.data_proof.leaf,
             leaf_index: data_proof_res.data_proof.leaf_index,
             data_root: data_proof_res.data_proof.roots.data_root,
             blob_root: data_proof_res.data_proof.roots.blob_root,
             bridge_root: data_proof_res.data_proof.roots.bridge_root,
-            data_root_commitment: succinct_data.data_commitment,
+            data_root_commitment: merkle_data.data_commitment,
             block_hash,
             message: data_proof_res.message
         })),
@@ -739,59 +484,6 @@ async fn get_avl_proof(
         .into_response())
 }
 
-/// Creates a request to the beaconcha service for mapping slot to the block number.
-#[inline(always)]
-async fn get_beacon_slot(
-    Path(slot): Path<U256>,
-    State(state): State<Arc<AppState>>,
-) -> Result<impl IntoResponse, ErrorResponse> {
-    let resp = state
-        .request_client
-        .get(format!(
-            "{}/eth/v2/beacon/blocks/{}",
-            state.beaconchain_base_url, slot
-        ))
-        .send()
-        .await
-        .map_err(|e| {
-            tracing::error!("❌ Cannot get beacon API data: {e:#}");
-            ErrorResponse::with_status_and_headers(
-                e.into(),
-                StatusCode::INTERNAL_SERVER_ERROR,
-                &[("Cache-Control", "public, max-age=60, must-revalidate")],
-            )
-        })?;
-
-    let response_data = resp.json::<Root>().await.map_err(|e| {
-        tracing::error!("❌ Cannot get beacon API response data: {e:#}");
-        ErrorResponse::with_status_and_headers(
-            e.into(),
-            StatusCode::INTERNAL_SERVER_ERROR,
-            &[("Cache-Control", "public, max-age=60, must-revalidate")],
-        )
-    })?;
-    Ok((
-        StatusCode::OK,
-        [(
-            "Cache-Control",
-            format!(
-                "public, max-age={}, immutable",
-                state.slot_mapping_cache_maxage
-            ),
-        )],
-        Json(json!(SlotMappingResponse {
-            block_number: response_data
-                .data
-                .message
-                .body
-                .execution_payload
-                .block_number,
-            block_hash: response_data.data.message.body.execution_payload.block_hash
-        })),
-    )
-        .into_response())
-}
-
 /// get_eth_head returns Ethereum head with the latest slot/block that is stored and a time.
 #[inline(always)]
 async fn get_eth_head(
@@ -827,39 +519,6 @@ async fn get_eth_head(
         .into_response())
 }
 
-/// get_eth_head returns Ethereum head with the latest slot/block that is stored and a time.
-#[inline(always)]
-async fn get_eth_head_legacy(
-    State(state): State<Arc<AppState>>,
-) -> Result<impl IntoResponse, ErrorResponse> {
-    let slot_block_head = SLOT_BLOCK_HEAD.read().await;
-    let (slot, _block, _hash, timestamp) = slot_block_head.as_ref().ok_or_else(|| {
-        ErrorResponse::with_status_and_headers(
-            anyhow!("Not found"),
-            StatusCode::INTERNAL_SERVER_ERROR,
-            &[("Cache-Control", "public, max-age=60, must-revalidate")],
-        )
-    })?;
-
-    let now = Utc::now().timestamp() as u64;
-    Ok((
-        StatusCode::OK,
-        [(
-            "Cache-Control",
-            format!(
-                "public, max-age={}, must-revalidate",
-                state.eth_head_cache_maxage
-            ),
-        )],
-        Json(json!(HeadResponseLegacy {
-            slot: *slot,
-            timestamp: *timestamp,
-            timestamp_diff: now - *timestamp
-        })),
-    )
-        .into_response())
-}
-
 /// get_avl_head returns start and end blocks which the contract has commitments
 #[inline(always)]
 async fn get_avl_head(
@@ -867,7 +526,10 @@ async fn get_avl_head(
 ) -> Result<impl IntoResponse, ErrorResponse> {
     let url = format!(
         "{}/{}/?contractChainId={}&contractAddress={}",
-        state.succinct_base_url, "range", state.contract_chain_id, state.contract_address
+        state.merkle_proof_service_base_url,
+        "range",
+        state.contract_chain_id,
+        state.contract_address
     );
     let response = state.request_client.get(url).send().await.map_err(|e| {
         tracing::error!("❌ Cannot parse range blocks: {e:#}");
@@ -1040,21 +702,21 @@ async fn get_proof(
             &[("Cache-Control", "max-age=60, must-revalidate")],
         )
     })? {
-        Ok(SuccinctAPIResponse {
+        Ok(MekrleProofAPIResponse {
             data: Some(data), ..
         }) => data,
-        Ok(SuccinctAPIResponse {
+        Ok(MekrleProofAPIResponse {
             success: Some(false),
             error: Some(data),
             ..
         }) => {
             if data.contains("not in the range of blocks") {
-                tracing::warn!(
-                    "Succinct VectorX contract not updated yet! Response: {}",
+                warn!("VectorX contract not updated yet! Response: {}", data);
+            } else {
+                tracing::error!(
+                    "Merkle proof API returned unsuccessfully. Response: {}",
                     data
                 );
-            } else {
-                tracing::error!("Succinct API returned unsuccessfully. Response: {}", data);
             }
             return Err(ErrorResponse::with_status_and_headers(
                 anyhow!("error: {data}"),
@@ -1063,7 +725,7 @@ async fn get_proof(
             ));
         }
         Err(err) => {
-            tracing::error!("Cannot get succinct api response {:?}", err);
+            tracing::error!("Cannot get merkle proof api response {:?}", err);
             return Err(ErrorResponse::with_status_and_headers(
                 anyhow!("error: {err}"),
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -1071,9 +733,9 @@ async fn get_proof(
             ));
         }
         _ => {
-            tracing::error!("Succinct API returned no data");
+            tracing::error!("Merkle proof API returned no data");
             return Err(ErrorResponse::with_status_and_headers(
-                anyhow!("Succinct API returned no data"),
+                anyhow!("Merkle proof API returned no data"),
                 StatusCode::INTERNAL_SERVER_ERROR,
                 &[("Cache-Control", "max-age=60, must-revalidate")],
             ));
@@ -1113,10 +775,10 @@ fn spawn_kate_proof(
 fn spawn_merkle_proof_range_fetch(
     state: Arc<AppState>,
     block_hash: B256,
-) -> JoinHandle<Result<SuccinctAPIResponse, reqwest::Error>> {
+) -> JoinHandle<Result<MekrleProofAPIResponse, reqwest::Error>> {
     let url = format!(
         "{}?chainName={}&contractChainId={}&contractAddress={}&blockHash={}",
-        state.succinct_base_url,
+        state.merkle_proof_service_base_url,
         state.avail_chain_name,
         state.contract_chain_id,
         state.contract_address,
@@ -1125,7 +787,7 @@ fn spawn_merkle_proof_range_fetch(
     tokio::spawn(async move {
         let res = state.request_client.get(url).send().await;
         match res {
-            Ok(resp) => resp.json::<SuccinctAPIResponse>().await,
+            Ok(resp) => resp.json::<MekrleProofAPIResponse>().await,
             Err(e) => Err(e),
         }
     })
@@ -1167,14 +829,19 @@ async fn main() {
     // Connection pool
     let connections_string = format!(
         "postgresql://{}:{}@{}/{}",
-        env::var("PG_USERNAME").unwrap_or("myuser".to_owned()),
-        env::var("PG_PASSWORD").unwrap_or("mypassword".to_owned()),
+        env::var("PG_USERNAME").unwrap_or("avail".to_owned()),
+        env::var("PG_PASSWORD").unwrap_or("avail".to_owned()),
         env::var("POSTGRES_URL").unwrap_or("localhost:5432".to_owned()),
-        env::var("POSTGRES_DB").unwrap_or("bridge-ui-indexer".to_owned()),
+        env::var("POSTGRES_DB").unwrap_or("ui-indexer".to_owned()),
     );
-    let connection_pool = r2d2::Pool::builder()
-        .build(ConnectionManager::<PgConnection>::new(connections_string))
-        .expect("Failed to create pool.");
+
+    info!("Connecting to {}", connections_string);
+
+    let db = PgPool::connect(&connections_string)
+        .await
+        .context("Cannot get connection pool")
+        .unwrap();
+
     const SUPPORTED_CHAIN_IDS: [u64; 7] = [1, 123, 32657, 84532, 11155111, 17000, 421614];
     // loop through expected_chain_ids and store the chain information, if value is missing, skip chain_id
     let chains = SUPPORTED_CHAIN_IDS
@@ -1210,7 +877,7 @@ async fn main() {
             )
             .unwrap(),
         request_client: Client::builder().brotli(true).build().unwrap(),
-        succinct_base_url: env::var("SUCCINCT_URL")
+        merkle_proof_service_base_url: env::var("MERKLE_PROOF_SERVICE_URL")
             .unwrap_or("https://beaconapi.succinct.xyz/api/integrations/vectorx".to_owned()),
         beaconchain_base_url: env::var("BEACONCHAIN_URL")
             .unwrap_or("https://sepolia.beaconcha.in/api/v1/slot".to_owned()),
@@ -1258,31 +925,33 @@ async fn main() {
                 transactions_mapping_response.parse::<u32>().ok()
             })
             .unwrap_or(60),
-        connection_pool,
+        db,
         chains,
+        helios_update_frequency: env::var("HELIOS_UPDATE_FREQUENCY")
+            .ok()
+            .and_then(|helios_update_frequency| helios_update_frequency.parse::<u32>().ok())
+            .unwrap_or(3600),
+        vector_update_frequency: env::var("VECTOR_UPDATE_FREQUENCY")
+            .ok()
+            .and_then(|vector_update_frequency| vector_update_frequency.parse::<u32>().ok())
+            .unwrap_or(360),
     });
 
     let app = Router::new()
         .route("/", get(alive))
         .route("/versions", get(versions))
         .route("/v1/info", get(info))
-        .route("/info", get(info))
-        .route("/v1/eth/proof/{block_hash}", get(get_eth_proof))
-        .route("/eth/proof/{block_hash}", get(get_eth_proof))
-        .route("/v1/eth/head", get(get_eth_head))
-        .route("/eth/head", get(get_eth_head_legacy))
-        .route("/v1/avl/head", get(get_avl_head))
-        .route("/avl/head", get(get_avl_head))
+        .route("/v1/eth/proof/{block_hash}", get(get_eth_proof)) // get proof from avail for ethereum
+        .route("/v1/eth/head", get(get_eth_head)) // fetch head form eth contract
+        .route("/v1/avl/head", get(get_avl_head)) // fetch head form avail pallet
         .route(
             "/v1/avl/proof/{block_hash}/{message_id}",
-            get(get_avl_proof),
+            get(get_avl_proof), // get proof from ethereum for avail
         )
-        .route("/v1/transactions", get(transactions))
+        .route("/v1/transactions", get(transactions)) // fetch all transaction
         .route("/transactions", get(transactions))
-        .route("/avl/proof/{block_hash}/{message_id}", get(get_avl_proof))
-        .route("/beacon/slot/{slot_number}", get(get_beacon_slot))
-        .route("/v1/head/{chain_id}", get(get_head))
-        .route("/v1/proof/{chain_id}", get(get_proof))
+        .route("/v1/head/{chain_id}", get(get_head)) // get head based on chain
+        .route("/v1/proof/{chain_id}", get(get_proof)) // get proof for avail based on chain
         .layer(TraceLayer::new_for_http())
         .layer(CompressionLayer::new())
         .layer(
@@ -1408,6 +1077,8 @@ async fn track_slot_avail_task(state: Arc<AppState>) -> Result<()> {
                 let mut slot_block_head = SLOT_BLOCK_HEAD.write().await;
                 tracing::info!("Beacon mapping: {slot}:{bl}");
                 *slot_block_head = Some((slot, bl, hash, timestamp));
+                info!("Timestamp form task: {:?}", timestamp);
+
                 drop(slot_block_head);
 
                 tokio::time::sleep(Duration::from_secs(60 * 5)).await;
@@ -1425,4 +1096,39 @@ async fn track_slot_avail_task(state: Arc<AppState>) -> Result<()> {
     do_work.retry(&retry_settings).await?;
 
     Ok(())
+}
+
+fn time_until_next_vector_update(
+    current_block: u32,
+    last_updated_block: u32,
+    blocks_per_update: u32,
+    block_time_seconds: u32,
+) -> Duration {
+    let blocks_since_update = current_block.saturating_sub(last_updated_block);
+    let blocks_remaining = blocks_per_update.saturating_sub(blocks_since_update);
+
+    Duration::from_secs((blocks_remaining * block_time_seconds) as u64)
+}
+
+fn time_until_next_helios_update(timestamp_ms: u64, helios_update_frequency: u32) -> Duration {
+    let now = Utc::now().timestamp() as u64;
+    let time_since_update = now - timestamp_ms;
+    let update_frequency = Duration::from_secs(helios_update_frequency as u64).as_secs();
+    let remaining = update_frequency.saturating_sub(time_since_update);
+    Duration::from_secs(remaining)
+}
+
+#[test]
+fn test_remaining_time_for_vector_update() {
+    let duration = time_until_next_vector_update(350, 50, 360, 20);
+    assert_eq!(1200, duration.as_secs());
+    let duration = time_until_next_vector_update(100, 50, 360, 20);
+    assert_eq!(6200, duration.as_secs());
+}
+
+#[test]
+fn test_remaining_time_for_helios_update() {
+    let update = Utc::now().timestamp() - 1200;
+    let remaining = time_until_next_helios_update(update as u64, 3600);
+    assert_eq!(2400, remaining.as_secs());
 }
