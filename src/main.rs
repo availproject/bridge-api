@@ -826,16 +826,17 @@ async fn main() {
         .and_then(|max_request| max_request.parse::<usize>().ok())
         .unwrap_or(1024);
 
+    let db_url: String = env::var("POSTGRES_URL").unwrap_or("localhost:5432".to_owned());
     // Connection pool
     let connections_string = format!(
         "postgresql://{}:{}@{}/{}",
         env::var("PG_USERNAME").unwrap_or("avail".to_owned()),
         env::var("PG_PASSWORD").unwrap_or("avail".to_owned()),
-        env::var("POSTGRES_URL").unwrap_or("localhost:5432".to_owned()),
+        db_url,
         env::var("POSTGRES_DB").unwrap_or("ui-indexer".to_owned()),
     );
 
-    info!("Connecting to {}", connections_string);
+    info!("Connecting to {}", db_url);
 
     let db = PgPool::connect(&connections_string)
         .await
