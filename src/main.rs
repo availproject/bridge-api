@@ -206,6 +206,13 @@ async fn transactions(
             20,
         );
 
+        tracing::info!(
+            avail_finalized_block,
+            range_end = range_blocks.data.end,
+            blocks_since = avail_finalized_block.saturating_sub(range_blocks.data.end),
+            "time_until_next_vector_update"
+        );
+
         for mut tx in transactions {
             let mut estimate = None;
 
