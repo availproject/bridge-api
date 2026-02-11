@@ -151,7 +151,8 @@ async fn transactions(
             {
                 // safe cast
                 tx.final_status = BridgeStatusEnum::ClaimReady
-            } else if tx.final_status != BridgeStatusEnum::Bridged
+            }
+            if tx.final_status != BridgeStatusEnum::Bridged
                 && tx.final_status != BridgeStatusEnum::ClaimReady
             {
                 estimate = Some(claim_estimate.as_secs());
@@ -212,7 +213,8 @@ async fn transactions(
                 && tx.source_block_height < range_blocks.data.end as i32
             {
                 tx.final_status = BridgeStatusEnum::ClaimReady;
-            } else if tx.final_status == BridgeStatusEnum::Initiated
+            }
+            if tx.final_status == BridgeStatusEnum::Initiated
                 || tx.final_status == BridgeStatusEnum::InProgress
             {
                 estimate = Some(claim_estimate.as_secs());
