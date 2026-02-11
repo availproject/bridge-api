@@ -845,8 +845,6 @@ async fn main() {
         env::var("POSTGRES_DB").unwrap_or("ui-indexer".to_owned()),
     );
 
-    info!("Connecting to {}", db_url);
-
     let db = PgPool::connect(&connections_string)
         .await
         .context("Cannot get connection pool")
