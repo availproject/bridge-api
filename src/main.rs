@@ -253,7 +253,8 @@ async fn transactions(
         StatusCode::OK,
         [("Cache-Control", "max-age=10, must-revalidate")],
         Json(json!(transaction_data_results)),
-    ).into_response())
+    )
+        .into_response())
 }
 
 async fn fetch_range_blocks(
