@@ -110,8 +110,6 @@ async fn transactions(
     Query(address_query): Query<TransactionQueryParams>,
     State(state): State<Arc<AppState>>,
 ) -> Result<impl IntoResponse, ErrorResponse> {
-    info!("Transaction query: {:?}", address_query);
-
     // check provided params
     if address_query.eth_address.is_none() && address_query.avail_address.is_none() {
         tracing::error!("Query params not provided.");
@@ -192,24 +190,26 @@ async fn transactions(
 
         let range_blocks = fetch_range_blocks(&state).await?;
 
-        let avail_finalized_block: u32 = state
+        let header: Value = state
             .avail_client
-            .request("chain_getFinalizedHead", rpc_params![])
+            .request("chain_getHeader", rpc_params![])
             .await
-            .context("finalized head")
-            .unwrap_or(0);
+            .context("get header")
+            .unwrap_or(json!({}));
+        let number_hex = header["number"].as_str().unwrap();
+        let latest_block_number = u32::from_str_radix(&number_hex[2..], 16).unwrap_or(0);
 
         let claim_estimate = time_until_next_vector_update(
-            avail_finalized_block,
+            latest_block_number,
             range_blocks.data.end,
             state.vector_update_frequency,
             20,
         );
 
         tracing::info!(
-            avail_finalized_block,
+            latest_block_number = latest_block_number,
             range_end = range_blocks.data.end,
-            blocks_since = avail_finalized_block.saturating_sub(range_blocks.data.end),
+            blocks_since = latest_block_number.saturating_sub(range_blocks.data.end),
             "time_until_next_vector_update"
         );
 
