@@ -249,7 +249,11 @@ async fn transactions(
 
     transaction_data_results.sort_unstable_by(|a, b| b.timestamp.cmp(&a.timestamp));
 
-    Ok(Json(json!(transaction_data_results)))
+    Ok((
+        StatusCode::OK,
+        [("Cache-Control", "max-age=10, must-revalidate")],
+        Json(json!(transaction_data_results)),
+    ).into_response())
 }
 
 async fn fetch_range_blocks(
