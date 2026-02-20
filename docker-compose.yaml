@@ -1,0 +1,17 @@
+version: '3'
+
+services:
+  db:
+    image: postgres:latest
+    container_name: bridge-api
+    environment:
+      POSTGRES_USER: avail
+      POSTGRES_PASSWORD: avail
+      POSTGRES_DB: ui-indexer
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+volumes:
+  postgres_data:

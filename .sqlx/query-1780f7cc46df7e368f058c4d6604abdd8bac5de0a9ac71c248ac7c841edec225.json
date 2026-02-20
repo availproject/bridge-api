@@ -1,0 +1,96 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT be.message_id,\n       be.sender,\n       be.receiver,\n       be.amount,\n       be.source_block_hash,\n       be.source_transaction_hash,\n       be.block_number as source_block_height,\n       be.timestamp,\n       ai.block_height as \"destination_block_height?: i32\",\n       ai.ext_index    as \"destination_tx_index?: i32\",\n       COALESCE(\n               CASE\n                   WHEN be.status = 'in_progress' AND aet.message_id IS NULL THEN 'in_progress'::status\n                   WHEN be.status = 'in_progress' AND aet.message_id IS NOT NULL THEN 'bridged'::status\n                   ELSE be.status\n                   END,\n               'in_progress'::status\n       ) ::status      AS \"final_status!: BridgeStatusEnum\"\nFROM bridge_event be\n         LEFT JOIN public.avail_execute_table AS aet\n                   ON be.message_id = aet.message_id\n         LEFT JOIN public.avail_indexer AS ai on ai.id = aet.id\nWHERE be.sender = $1\n    AND be.event_type = $2\n    AND (ai.ext_success = $3\n   OR ai.ext_success is null)\nORDER BY be.timestamp DESC\nLIMIT 1000",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "message_id",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "sender",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "receiver",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "amount",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "source_block_hash",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 5,
+        "name": "source_transaction_hash",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 6,
+        "name": "source_block_height",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 7,
+        "name": "timestamp",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 8,
+        "name": "destination_block_height?: i32",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 9,
+        "name": "destination_tx_index?: i32",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 10,
+        "name": "final_status!: BridgeStatusEnum",
+        "type_info": {
+          "Custom": {
+            "name": "status",
+            "kind": {
+              "Enum": [
+                "initiated",
+                "in_progress",
+                "claim_ready",
+                "bridged"
+              ]
+            }
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Bool"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      null
+    ]
+  },
+  "hash": "1780f7cc46df7e368f058c4d6604abdd8bac5de0a9ac71c248ac7c841edec225"
+}
