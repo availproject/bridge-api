@@ -1,27 +1,25 @@
+use crate::AppState;
 use crate::models::{ErrorResponse, InitiateRequest};
-use crate::{
-    AppState,
-};
-use alloy::primitives::{hex, U256};
+use alloy::primitives::{U256, hex};
+use alloy::signers::k256::sha2::Digest;
 use alloy::sol_types::SolCall;
 use anyhow::anyhow;
+use avail_core::data_proof::Message;
+use axum::response::Response;
 use axum::{
     extract::{Json, State},
     http::StatusCode,
     response::IntoResponse,
 };
-use serde_json::{json, Value};
-use std::sync::Arc;
-use alloy::signers::k256::sha2::Digest;
-use avail_core::data_proof::Message;
-use axum::response::Response;
 use jsonrpsee::core::client::ClientT;
 use jsonrpsee::http_client::HttpClient;
 use jsonrpsee::rpc_params;
 use parity_scale_codec::{Compact, Decode};
+use serde_json::{Value, json};
 use sha3::Keccak256;
-use sp_core::{blake2_256, twox_128};
 use sp_core::crypto::{AccountId32, Ss58Codec};
+use sp_core::{blake2_256, twox_128};
+use std::sync::Arc;
 pub(crate) async fn initiate_transaction(
     State(state): State<Arc<AppState>>,
     Json(request): Json<InitiateRequest>,
@@ -103,7 +101,6 @@ pub(crate) async fn initiate_transaction(
         )),
     }
 }
-
 
 async fn initiate_eth_transaction(
     state: &Arc<AppState>,
@@ -245,8 +242,8 @@ async fn initiate_eth_transaction(
         timestamp,
         "initiate",
     )
-        .execute(&state.db)
-        .await?;
+    .execute(&state.db)
+    .await?;
 
     Ok((StatusCode::OK, Json(json!({"status": "ok"}))).into_response())
 }
@@ -431,8 +428,8 @@ async fn initiate_avail_transaction(
         timestamp,
         "initiate",
     )
-        .execute(&state.db)
-        .await?;
+    .execute(&state.db)
+    .await?;
 
     Ok((StatusCode::OK, Json(json!({"status": "ok"}))).into_response())
 }
@@ -520,8 +517,8 @@ async fn claim_eth_transaction(
         timestamp,
         "claim",
     )
-        .execute(&state.db)
-        .await?;
+    .execute(&state.db)
+    .await?;
 
     Ok((StatusCode::OK, Json(json!({"status": "ok"}))).into_response())
 }
@@ -617,8 +614,8 @@ async fn claim_avail_transaction(
         timestamp,
         "claim",
     )
-        .execute(&state.db)
-        .await?;
+    .execute(&state.db)
+    .await?;
 
     Ok((StatusCode::OK, Json(json!({"status": "ok"}))).into_response())
 }

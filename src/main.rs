@@ -325,7 +325,9 @@ async fn transactions(
     }
 
     // Clean up initiated/claimed transactions that have been indexed
-    let _ = sqlx::query_file!("sql/delete_indexed_initiated_tx.sql")
+    let _ = sqlx::query(include_str!("../sql/delete_indexed_initiated_tx.sql"))
+        .bind(eth_addr_for_initiated.as_deref().unwrap_or(""))
+        .bind(avail_addr_for_initiated.as_deref().unwrap_or(""))
         .execute(&state.db)
         .await;
 
