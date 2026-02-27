@@ -1,0 +1,40 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT message_id, source_transaction_hash, source_block_number, source_tx_index\nFROM initiated_transactions\nWHERE tx_type = 'claim'\n  AND message_id = ANY($1)\n",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "message_id",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "source_transaction_hash",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "source_block_number",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 3,
+        "name": "source_tx_index",
+        "type_info": "Int4"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "TextArray"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      true
+    ]
+  },
+  "hash": "dee2e7e7a3238412377519a16c05408336193be079337587d1b1ff6267c7bc09"
+}

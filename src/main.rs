@@ -1,8 +1,11 @@
+mod initiate_transaction;
 mod models;
+use crate::initiate_transaction::initiate_transaction;
 use crate::models::*;
 
 use alloy::primitives::{Address, B256, U256, hex};
 use alloy::providers::ProviderBuilder;
+use alloy::sol_types::SolCall;
 use anyhow::{Context, Result, anyhow};
 use axum::body::{Body, to_bytes};
 use axum::response::Response;
@@ -11,7 +14,7 @@ use axum::{
     extract::{Json, Path, Query, State},
     http::StatusCode,
     response::IntoResponse,
-    routing::get,
+    routing::{get, post},
 };
 use backon::ExponentialBuilder;
 use backon::Retryable;
@@ -19,6 +22,8 @@ use chrono::Utc;
 
 use crate::models::TxDirection::{AvailEth, EthAvail};
 use alloy::core::sol;
+use avail_core::data_proof::Message;
+use bigdecimal::BigDecimal;
 use http::Method;
 use jsonrpsee::{
     core::ClientError,
@@ -27,11 +32,12 @@ use jsonrpsee::{
     rpc_params,
 };
 use lazy_static::lazy_static;
+use parity_scale_codec::Compact;
 use reqwest::Client;
 use serde_json::{Value, json};
 use sha3::{Digest, Keccak256};
 use sp_core::Decode;
-use sp_io::hashing::twox_128;
+use sp_core::twox_128;
 use sqlx::PgPool;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -45,7 +51,7 @@ use tower_http::{
     cors::{Any, CorsLayer},
     trace::TraceLayer,
 };
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 use tracing_subscriber::prelude::*;
 
 sol! {
@@ -122,6 +128,9 @@ async fn transactions(
 
     let mut transaction_data_results: Vec<TransactionData> = vec![];
 
+    let eth_addr_for_initiated = address_query.eth_address.map(|a| format!("{:?}", a));
+    let avail_addr_for_initiated = address_query.avail_address.clone();
+
     if let Some(eth_address) = address_query.eth_address {
         let transactions: Vec<EthTransactionRow> = sqlx::query_file_as!(
             EthTransactionRow,
@@ -196,7 +205,9 @@ async fn transactions(
             .await
             .context("get header")
             .unwrap_or(json!({}));
-        let number_hex = header["number"].as_str().unwrap();
+        let number_hex = header["number"].as_str().ok_or_else(|| {
+            ErrorResponse::with_status(anyhow!("Missing blockNumber"), StatusCode::BAD_REQUEST)
+        })?;
         let latest_block_number = u32::from_str_radix(&number_hex[2..], 16).unwrap_or(0);
 
         let claim_estimate = time_until_next_vector_update(
@@ -246,6 +257,77 @@ async fn transactions(
             ));
         }
     }
+
+    // Query initiated transactions not yet indexed
+    let initiated: Vec<InitiatedTransactionRow> = sqlx::query_file_as!(
+        InitiatedTransactionRow,
+        "sql/query_initiated_tx.sql",
+        eth_addr_for_initiated.as_deref().unwrap_or(""),
+        avail_addr_for_initiated.as_deref().unwrap_or("")
+    )
+    .fetch_all(&state.db)
+    .await
+    .unwrap_or_default();
+
+    for row in &initiated {
+        let direction = if row.direction == "EthAvail" {
+            EthAvail
+        } else {
+            AvailEth
+        };
+        let msg_id: BigDecimal = row.message_id.parse().unwrap_or_default();
+        transaction_data_results.push(TransactionData::new(
+            direction,
+            msg_id,
+            row.sender.clone(),
+            row.receiver.clone(),
+            row.source_block_hash.clone(),
+            row.source_transaction_hash.clone(),
+            row.amount.clone(),
+            BridgeStatusEnum::Initiated,
+            row.timestamp,
+            None,
+            Some(row.source_block_number),
+            row.source_tx_index,
+            None,
+            None,
+            None,
+        ));
+    }
+
+    // Check for claimed transactions and update status to Bridged
+    let message_ids: Vec<String> = transaction_data_results
+        .iter()
+        .map(|t| t.message_id.to_string())
+        .collect();
+
+    if !message_ids.is_empty() {
+        let claims: Vec<ClaimedTransactionRow> = sqlx::query_file_as!(
+            ClaimedTransactionRow,
+            "sql/query_claimed_tx.sql",
+            &message_ids,
+        )
+        .fetch_all(&state.db)
+        .await
+        .unwrap_or_default();
+
+        for claim in &claims {
+            if let Some(tx) = transaction_data_results
+                .iter_mut()
+                .find(|t| t.message_id.to_string() == claim.message_id)
+            {
+                tx.status = BridgeStatusEnum::Bridged;
+                tx.destination_tx_hash = Some(claim.source_transaction_hash.clone());
+                tx.destination_block_number = Some(claim.source_block_number);
+                tx.destination_tx_index = claim.source_tx_index;
+            }
+        }
+    }
+
+    // Clean up initiated/claimed transactions that have been indexed
+    let _ = sqlx::query_file!("sql/delete_indexed_initiated_tx.sql")
+        .execute(&state.db)
+        .await;
 
     transaction_data_results.sort_unstable_by(|a, b| b.timestamp.cmp(&a.timestamp));
 
@@ -963,13 +1045,14 @@ async fn main() {
         )
         .route("/v1/transactions", get(transactions)) // fetch all transaction
         .route("/transactions", get(transactions))
+        .route("/v1/initiate", post(initiate_transaction))
         .route("/v1/head/{chain_id}", get(get_head)) // get head based on chain
         .route("/v1/proof/{chain_id}", get(get_proof)) // get proof for avail based on chain
         .layer(TraceLayer::new_for_http())
         .layer(CompressionLayer::new())
         .layer(
             CorsLayer::new()
-                .allow_methods(vec![Method::GET])
+                .allow_methods(vec![Method::GET, Method::POST])
                 .allow_origin(Any),
         )
         .with_state(shared_state.clone());
@@ -1090,7 +1173,7 @@ async fn track_slot_avail_task(state: Arc<AppState>) -> Result<()> {
                 let mut slot_block_head = SLOT_BLOCK_HEAD.write().await;
                 tracing::info!("Beacon mapping: {slot}:{bl}");
                 *slot_block_head = Some((slot, bl, hash, timestamp));
-                info!("Timestamp form task: {:?}", timestamp);
+                debug!("Timestamp form task: {:?}", timestamp);
 
                 drop(slot_block_head);
 
