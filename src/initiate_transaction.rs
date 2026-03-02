@@ -54,6 +54,9 @@ pub(crate) async fn initiate_transaction(
             ));
         }
     }
+    if let Some(message_id) = request.message_id.as_deref() {
+        validate_message_id(message_id)?;
+    }
 
     // Check if already processed to avoid redundant RPC calls (skip for claims)
     if request.message_id.is_none() {
@@ -439,6 +442,8 @@ async fn claim_eth_transaction(
     eth_tx_hash: &str,
     message_id: &str,
 ) -> anyhow::Result<Response, ErrorResponse> {
+    let requested_message_id = validate_message_id(message_id)?;
+
     // Verify tx exists
     let receipt: Value = state
         .ethereum_client
@@ -458,6 +463,9 @@ async fn claim_eth_transaction(
             StatusCode::NOT_FOUND,
         ));
     }
+    let receipt_message_id =
+        extract_eth_claim_message_id(&receipt, state.bridge_contract_address.as_str())?;
+    ensure_message_id_matches(requested_message_id, receipt_message_id)?;
 
     let block_hash = receipt["blockHash"]
         .as_str()
@@ -523,12 +531,74 @@ async fn claim_eth_transaction(
     Ok((StatusCode::OK, Json(json!({"status": "ok"}))).into_response())
 }
 
+fn validate_message_id(message_id: &str) -> anyhow::Result<U256, ErrorResponse> {
+    message_id.parse::<U256>().map_err(|_| {
+        ErrorResponse::with_status(
+            anyhow!("Invalid messageId format, expected unsigned integer"),
+            StatusCode::BAD_REQUEST,
+        )
+    })
+}
+
+fn ensure_message_id_matches(requested: U256, derived: U256) -> anyhow::Result<(), ErrorResponse> {
+    if requested == derived {
+        Ok(())
+    } else {
+        Err(ErrorResponse::with_status(
+            anyhow!("Provided messageId does not match claim transaction"),
+            StatusCode::BAD_REQUEST,
+        ))
+    }
+}
+
+fn extract_eth_claim_message_id(
+    receipt: &Value,
+    bridge_contract_address: &str,
+) -> anyhow::Result<U256, ErrorResponse> {
+    let logs = receipt["logs"].as_array().ok_or_else(|| {
+        ErrorResponse::with_status(anyhow!("Missing logs"), StatusCode::BAD_REQUEST)
+    })?;
+
+    let claim_log = logs
+        .iter()
+        .find(|log| {
+            log["address"]
+                .as_str()
+                .map(|address| address.eq_ignore_ascii_case(bridge_contract_address))
+                .unwrap_or(false)
+        })
+        .ok_or_else(|| {
+            ErrorResponse::with_status(
+                anyhow!("Claim event not found in transaction"),
+                StatusCode::BAD_REQUEST,
+            )
+        })?;
+
+    let data_hex = claim_log["data"].as_str().ok_or_else(|| {
+        ErrorResponse::with_status(anyhow!("Missing claim event data"), StatusCode::BAD_REQUEST)
+    })?;
+    let data_bytes = hex::decode(data_hex.trim_start_matches("0x")).map_err(|_| {
+        ErrorResponse::with_status(anyhow!("Invalid claim event data"), StatusCode::BAD_REQUEST)
+    })?;
+
+    if data_bytes.len() < 32 {
+        return Err(ErrorResponse::with_status(
+            anyhow!("Invalid claim event data"),
+            StatusCode::BAD_REQUEST,
+        ));
+    }
+
+    Ok(U256::from_be_slice(&data_bytes[data_bytes.len() - 32..]))
+}
+
 async fn claim_avail_transaction(
     state: &Arc<AppState>,
     block_number: u32,
     tx_index: u32,
     message_id: &str,
 ) -> anyhow::Result<Response, ErrorResponse> {
+    let requested_message_id = validate_message_id(message_id)?;
+
     let block_hash: String = state
         .avail_client
         .request("chain_getBlockHash", rpc_params![block_number])
@@ -573,6 +643,8 @@ async fn claim_avail_transaction(
     })?;
 
     let ext_hash_hex = format!("0x{}", hex::encode(blake2_256(&ext_bytes)));
+    let indexed_message_id = fetch_avail_claim_message_id_by_ext_hash(state, &ext_hash_hex).await?;
+    ensure_message_id_matches(requested_message_id, indexed_message_id)?;
 
     // Decode sender from extrinsic
     let mut cursor = &ext_bytes[..];
@@ -618,4 +690,77 @@ async fn claim_avail_transaction(
     .await?;
 
     Ok((StatusCode::OK, Json(json!({"status": "ok"}))).into_response())
+}
+
+async fn fetch_avail_claim_message_id_by_ext_hash(
+    state: &Arc<AppState>,
+    ext_hash: &str,
+) -> anyhow::Result<U256, ErrorResponse> {
+    let message_id_text: Option<String> = sqlx::query_scalar(
+        r#"
+SELECT aet.message_id::text
+FROM avail_execute_table aet
+JOIN avail_indexer ai ON ai.id = aet.id
+WHERE ai.ext_hash = $1
+LIMIT 1
+        "#,
+    )
+    .bind(ext_hash)
+    .fetch_optional(&state.db)
+    .await?;
+
+    let message_id_text = message_id_text.ok_or_else(|| {
+        ErrorResponse::with_status(
+            anyhow!("Unable to validate claim messageId from fetched transaction"),
+            StatusCode::BAD_REQUEST,
+        )
+    })?;
+
+    validate_message_id(&message_id_text)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn validate_message_id_accepts_decimal_u256() {
+        assert!(validate_message_id("12965243546238977").is_ok());
+    }
+
+    #[test]
+    fn validate_message_id_rejects_non_numeric() {
+        assert!(validate_message_id("abc123").is_err());
+    }
+
+    #[test]
+    fn eth_claim_message_id_must_match_receipt() {
+        let receipt = json!({
+            "logs": [{
+                "address": "0x967F7DdC4ec508462231849AE81eeaa68Ad01389",
+                "data": "0x000000000000000000000000000000000000000000000000002e0fd200000001"
+            }]
+        });
+
+        let expected =
+            extract_eth_claim_message_id(&receipt, "0x967F7DdC4ec508462231849AE81eeaa68Ad01389")
+                .map(|v| v.to_string());
+
+        assert_eq!(expected.ok(), Some("12965243546238977".to_string()));
+    }
+
+    #[test]
+    fn message_id_match_accepts_equal_values() {
+        let requested = U256::from(42);
+        let derived = U256::from(42);
+        assert!(ensure_message_id_matches(requested, derived).is_ok());
+    }
+
+    #[test]
+    fn message_id_match_rejects_mismatch() {
+        let requested = U256::from(42);
+        let derived = U256::from(43);
+        assert!(ensure_message_id_matches(requested, derived).is_err());
+    }
 }
