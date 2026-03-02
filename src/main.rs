@@ -324,13 +324,6 @@ async fn transactions(
         }
     }
 
-    // Clean up initiated/claimed transactions that have been indexed
-    let _ = sqlx::query(include_str!("../sql/delete_indexed_initiated_tx.sql"))
-        .bind(eth_addr_for_initiated.as_deref().unwrap_or(""))
-        .bind(avail_addr_for_initiated.as_deref().unwrap_or(""))
-        .execute(&state.db)
-        .await;
-
     transaction_data_results.sort_unstable_by(|a, b| b.timestamp.cmp(&a.timestamp));
 
     Ok((
@@ -907,6 +900,33 @@ async fn fetch_chain_head(state: Arc<AppState>, chain_id: u64) -> Result<u32> {
     }
 }
 
+fn cleanup_interval_seconds(raw: Option<String>) -> u64 {
+    raw.and_then(|v| v.parse::<u64>().ok())
+        .filter(|seconds| *seconds > 0)
+        .unwrap_or(60)
+}
+
+async fn cleanup_indexed_initiated_transactions(state: &Arc<AppState>) -> Result<()> {
+    sqlx::query(include_str!(
+        "../sql/delete_indexed_initiated_tx_global.sql"
+    ))
+    .execute(&state.db)
+    .await?;
+    Ok(())
+}
+
+async fn cleanup_indexed_initiated_transactions_task(
+    state: Arc<AppState>,
+    cleanup_interval_seconds: u64,
+) {
+    loop {
+        if let Err(e) = cleanup_indexed_initiated_transactions(&state).await {
+            warn!("Indexed initiated tx cleanup failed: {e:#}");
+        }
+        tokio::time::sleep(Duration::from_secs(cleanup_interval_seconds)).await;
+    }
+}
+
 #[tokio::main]
 async fn main() {
     dotenvy::dotenv().ok();
@@ -923,6 +943,8 @@ async fn main() {
         .ok()
         .and_then(|max_request| max_request.parse::<usize>().ok())
         .unwrap_or(1024);
+    let indexed_tx_cleanup_interval_seconds =
+        cleanup_interval_seconds(env::var("INDEXED_TX_CLEANUP_INTERVAL_SECONDS").ok());
 
     let db_url: String = env::var("POSTGRES_URL").unwrap_or("localhost:5432".to_owned());
     // Connection pool
@@ -1065,6 +1087,7 @@ async fn main() {
         .await
         .unwrap();
 
+    let cleanup_state = shared_state.clone();
     tokio::spawn(async move {
         tracing::info!("Starting head tracking task");
         if let Err(e) = track_slot_avail_task(shared_state.clone()).await {
@@ -1072,6 +1095,10 @@ async fn main() {
             process::exit(1);
         }
     });
+    tokio::spawn(cleanup_indexed_initiated_transactions_task(
+        cleanup_state,
+        indexed_tx_cleanup_interval_seconds,
+    ));
     tracing::info!("🚀 Started server on host {} with port {}", host, port);
     axum::serve(listener, app).await.unwrap();
 }
@@ -1229,4 +1256,23 @@ fn test_remaining_time_for_helios_update() {
     let update = Utc::now().timestamp() - 1200;
     let remaining = time_until_next_helios_update(update as u64, 3600);
     assert_eq!(2400, remaining.as_secs());
+}
+
+#[test]
+fn cleanup_interval_defaults_to_60_seconds() {
+    assert_eq!(cleanup_interval_seconds(None), 60);
+}
+
+#[test]
+fn cleanup_interval_uses_positive_value() {
+    assert_eq!(cleanup_interval_seconds(Some("15".to_string())), 15);
+}
+
+#[test]
+fn cleanup_interval_rejects_invalid_or_zero() {
+    assert_eq!(cleanup_interval_seconds(Some("0".to_string())), 60);
+    assert_eq!(
+        cleanup_interval_seconds(Some("not-a-number".to_string())),
+        60
+    );
 }

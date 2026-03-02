@@ -1,8 +1,5 @@
 DELETE FROM initiated_transactions it
 WHERE
--- Scope cleanup to the senders passed into the transactions query.
-(it.sender = $1 OR it.sender = $2)
-AND (
     -- Clean up initiate records when source tx is indexed.
     (it.tx_type = 'initiate' AND it.direction = 'EthAvail' AND EXISTS (
         SELECT 1 FROM bridge_event be
@@ -21,5 +18,4 @@ AND (
     OR (it.tx_type = 'claim' AND it.direction = 'EthAvail' AND EXISTS (
         SELECT 1 FROM avail_execute_table aet
         WHERE aet.message_id::text = it.message_id
-    ))
-)
+    ));
