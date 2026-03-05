@@ -1,0 +1,83 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT source_transaction_hash, direction, message_id, sender, receiver,\n       amount, source_block_hash, source_block_number, source_tx_index, timestamp, tx_type\nFROM initiated_transactions it\nWHERE tx_type = 'initiate'\n  AND (it.sender = $1 OR it.sender = $2)\n  AND NOT EXISTS (\n    SELECT 1 FROM bridge_event be\n    WHERE be.source_transaction_hash = it.source_transaction_hash\n      AND it.direction = 'EthAvail'\n  )\n  AND NOT EXISTS (\n    SELECT 1 FROM avail_indexer ai\n    WHERE ai.ext_hash = it.source_transaction_hash\n      AND it.direction = 'AvailEth'\n  )\nORDER BY it.timestamp DESC\nLIMIT 100\n",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "source_transaction_hash",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "direction",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "message_id",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "sender",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "receiver",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 5,
+        "name": "amount",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 6,
+        "name": "source_block_hash",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 7,
+        "name": "source_block_number",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 8,
+        "name": "source_tx_index",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 9,
+        "name": "timestamp",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 10,
+        "name": "tx_type",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      false,
+      false
+    ]
+  },
+  "hash": "aeb96222ec314d46fabb7bb143802e8f22ef09551605a7c4f2cc26d315f77aaa"
+}

@@ -6,7 +6,7 @@ SELECT ai.id                          AS message_id,
        ai.ext_hash                    AS source_transaction_hash,
        ai.block_height                AS source_block_height,
        ai.ext_index                   AS source_tx_index,
-       es.block_timestamp,
+       EXTRACT(EPOCH FROM ai.block_timestamp)::bigint AS "block_timestamp!",
        be.source_transaction_hash     AS "destination_tx_hash?: String",
        COALESCE(
                CASE
@@ -23,5 +23,5 @@ WHERE ai.signature_address = $1
   AND es.type = $2
   AND (be.event_type = $3 or be.event_type is null)
   AND ai.ext_success = $4
-ORDER BY es.block_timestamp DESC
+ORDER BY ai.block_timestamp DESC
 LIMIT 1000;

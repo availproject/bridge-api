@@ -402,3 +402,35 @@ impl TransactionData {
         }
     }
 }
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InitiateRequest {
+    pub eth_tx_hash: Option<String>,
+    pub avail_block_number: Option<u32>,
+    pub avail_tx_index: Option<u32>,
+    pub message_id: Option<String>,
+}
+
+#[derive(Debug, FromRow)]
+pub struct InitiatedTransactionRow {
+    pub source_transaction_hash: String,
+    pub direction: String,
+    pub message_id: String,
+    pub sender: String,
+    pub receiver: String,
+    pub amount: String,
+    pub source_block_hash: String,
+    pub source_block_number: i32,
+    pub source_tx_index: Option<i32>,
+    pub timestamp: i64,
+    pub tx_type: String,
+}
+
+#[derive(Debug, FromRow)]
+pub struct ClaimedTransactionRow {
+    pub message_id: String,
+    pub source_transaction_hash: String,
+    pub source_block_number: i32,
+    pub source_tx_index: Option<i32>,
+}

@@ -1,0 +1,1 @@
+SELECT EXISTS(SELECT 1 FROM initiated_transactions WHERE source_transaction_hash = $1)

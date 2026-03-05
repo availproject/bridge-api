@@ -1707,6 +1707,7 @@ dependencies = [
  "jsonrpsee",
  "lazy_static",
  "log",
+ "parity-scale-codec",
  "reqwest",
  "serde",
  "serde_json",

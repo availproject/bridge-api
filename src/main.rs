@@ -1,8 +1,11 @@
+mod initiate_transaction;
 mod models;
+use crate::initiate_transaction::initiate_transaction;
 use crate::models::*;
 
 use alloy::primitives::{Address, B256, U256, hex};
 use alloy::providers::ProviderBuilder;
+use alloy::sol_types::SolCall;
 use anyhow::{Context, Result, anyhow};
 use axum::body::{Body, to_bytes};
 use axum::response::Response;
@@ -11,7 +14,7 @@ use axum::{
     extract::{Json, Path, Query, State},
     http::StatusCode,
     response::IntoResponse,
-    routing::get,
+    routing::{get, post},
 };
 use backon::ExponentialBuilder;
 use backon::Retryable;
@@ -19,6 +22,8 @@ use chrono::Utc;
 
 use crate::models::TxDirection::{AvailEth, EthAvail};
 use alloy::core::sol;
+use avail_core::data_proof::Message;
+use bigdecimal::BigDecimal;
 use http::Method;
 use jsonrpsee::{
     core::ClientError,
@@ -27,11 +32,12 @@ use jsonrpsee::{
     rpc_params,
 };
 use lazy_static::lazy_static;
+use parity_scale_codec::Compact;
 use reqwest::Client;
 use serde_json::{Value, json};
 use sha3::{Digest, Keccak256};
 use sp_core::Decode;
-use sp_io::hashing::twox_128;
+use sp_core::twox_128;
 use sqlx::PgPool;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -45,7 +51,7 @@ use tower_http::{
     cors::{Any, CorsLayer},
     trace::TraceLayer,
 };
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 use tracing_subscriber::prelude::*;
 
 sol! {
@@ -122,6 +128,9 @@ async fn transactions(
 
     let mut transaction_data_results: Vec<TransactionData> = vec![];
 
+    let eth_addr_for_initiated = address_query.eth_address.map(|a| format!("{:?}", a));
+    let avail_addr_for_initiated = address_query.avail_address.clone();
+
     if let Some(eth_address) = address_query.eth_address {
         let transactions: Vec<EthTransactionRow> = sqlx::query_file_as!(
             EthTransactionRow,
@@ -188,7 +197,16 @@ async fn transactions(
         .fetch_all(&state.db)
         .await?;
 
-        let range_blocks = fetch_range_blocks(&state).await?;
+        let range_blocks = match fetch_range_blocks(&state).await {
+            Ok(range_blocks) => Some(range_blocks),
+            Err(err) => {
+                tracing::warn!(
+                    "Failed to fetch range blocks for /v1/transactions: {:#}",
+                    err.error
+                );
+                None
+            }
+        };
 
         let header: Value = state
             .avail_client
@@ -196,35 +214,45 @@ async fn transactions(
             .await
             .context("get header")
             .unwrap_or(json!({}));
-        let number_hex = header["number"].as_str().unwrap();
+        let number_hex = header["number"].as_str().ok_or_else(|| {
+            ErrorResponse::with_status(anyhow!("Missing blockNumber"), StatusCode::BAD_REQUEST)
+        })?;
         let latest_block_number = u32::from_str_radix(&number_hex[2..], 16).unwrap_or(0);
 
-        let claim_estimate = time_until_next_vector_update(
-            latest_block_number,
-            range_blocks.data.end,
-            state.vector_update_frequency,
-            20,
-        );
+        let claim_estimate = range_blocks.as_ref().map(|range_blocks| {
+            time_until_next_vector_update(
+                latest_block_number,
+                range_blocks.data.end,
+                state.vector_update_frequency,
+                20,
+            )
+        });
 
-        tracing::info!(
-            latest_block_number = latest_block_number,
-            range_end = range_blocks.data.end,
-            blocks_since = latest_block_number.saturating_sub(range_blocks.data.end),
-            "time_until_next_vector_update"
-        );
+        if let Some(range_blocks) = range_blocks.as_ref() {
+            tracing::info!(
+                latest_block_number = latest_block_number,
+                range_end = range_blocks.data.end,
+                blocks_since = latest_block_number.saturating_sub(range_blocks.data.end),
+                "time_until_next_vector_update"
+            );
+        }
 
         for mut tx in transactions {
             let mut estimate = None;
 
-            if tx.final_status == BridgeStatusEnum::InProgress
-                && tx.source_block_height < range_blocks.data.end as i32
-            {
-                tx.final_status = BridgeStatusEnum::ClaimReady;
+            if let Some(range_blocks) = range_blocks.as_ref() {
+                if tx.final_status == BridgeStatusEnum::InProgress
+                    && tx.source_block_height < range_blocks.data.end as i32
+                {
+                    tx.final_status = BridgeStatusEnum::ClaimReady;
+                }
             }
             if tx.final_status == BridgeStatusEnum::Initiated
                 || tx.final_status == BridgeStatusEnum::InProgress
             {
-                estimate = Some(claim_estimate.as_secs());
+                if let Some(claim_estimate) = claim_estimate {
+                    estimate = Some(claim_estimate.as_secs());
+                }
             }
 
             transaction_data_results.push(TransactionData::new(
@@ -247,6 +275,81 @@ async fn transactions(
         }
     }
 
+    // Query initiated transactions not yet indexed
+    let initiated: Vec<InitiatedTransactionRow> = sqlx::query_file_as!(
+        InitiatedTransactionRow,
+        "sql/query_initiated_tx.sql",
+        eth_addr_for_initiated.as_deref().unwrap_or(""),
+        avail_addr_for_initiated.as_deref().unwrap_or("")
+    )
+    .fetch_all(&state.db)
+    .await
+    .unwrap_or_else(|e| {
+        tracing::warn!("Failed to fetch initiated transactions: {e:#}");
+        vec![]
+    });
+
+    for row in &initiated {
+        let direction = if row.direction == "EthAvail" {
+            EthAvail
+        } else {
+            AvailEth
+        };
+        let msg_id: BigDecimal = row.message_id.parse().unwrap_or_default();
+        transaction_data_results.push(TransactionData::new(
+            direction,
+            msg_id,
+            row.sender.clone(),
+            row.receiver.clone(),
+            row.source_block_hash.clone(),
+            row.source_transaction_hash.clone(),
+            row.amount.clone(),
+            BridgeStatusEnum::Initiated,
+            row.timestamp,
+            None,
+            Some(row.source_block_number),
+            row.source_tx_index,
+            None,
+            None,
+            None,
+        ));
+    }
+
+    // Check for claimed transactions and update status to Bridged
+    let message_ids: Vec<String> = transaction_data_results
+        .iter()
+        .map(|t| t.message_id.to_string())
+        .collect();
+
+    if !message_ids.is_empty() {
+        let claims: Vec<ClaimedTransactionRow> = sqlx::query_file_as!(
+            ClaimedTransactionRow,
+            "sql/query_claimed_tx.sql",
+            &message_ids,
+            eth_addr_for_initiated.as_deref().unwrap_or(""),
+            avail_addr_for_initiated.as_deref().unwrap_or("")
+        )
+        .fetch_all(&state.db)
+        .await
+        .unwrap_or_else(|e| {
+            tracing::warn!("Failed to fetch claimed transactions: {e:#}");
+            vec![]
+        });
+
+        for claim in &claims {
+            let claim_id: BigDecimal = claim.message_id.parse().unwrap_or_default();
+            if let Some(tx) = transaction_data_results
+                .iter_mut()
+                .find(|t| t.message_id == claim_id && t.status == BridgeStatusEnum::Initiated)
+            {
+                tx.status = BridgeStatusEnum::Bridged;
+                tx.destination_tx_hash = Some(claim.source_transaction_hash.clone());
+                tx.destination_block_number = Some(claim.source_block_number);
+                tx.destination_tx_index = claim.source_tx_index;
+            }
+        }
+    }
+
     transaction_data_results.sort_unstable_by(|a, b| b.timestamp.cmp(&a.timestamp));
 
     Ok((
@@ -255,6 +358,48 @@ async fn transactions(
         Json(json!(transaction_data_results)),
     )
         .into_response())
+}
+
+fn summarize_response_body(body: &str) -> String {
+    let trimmed = body.trim();
+    if trimmed.is_empty() {
+        return "<empty>".to_string();
+    }
+
+    const MAX_CHARS: usize = 256;
+    let mut snippet: String = trimmed.chars().take(MAX_CHARS).collect();
+    if trimmed.chars().count() > MAX_CHARS {
+        snippet.push_str("...");
+    }
+    snippet
+}
+
+fn parse_range_blocks_response(
+    status: StatusCode,
+    body: &str,
+) -> Result<RangeBlocksAPIResponse, ErrorResponse> {
+    let body_summary = summarize_response_body(body);
+
+    if !status.is_success() {
+        let reason = status.canonical_reason().unwrap_or("unknown");
+        return Err(ErrorResponse::with_status_and_headers(
+            anyhow!(
+                "Range service returned HTTP {} ({reason}) with body: {}",
+                status.as_u16(),
+                body_summary
+            ),
+            StatusCode::BAD_GATEWAY,
+            &[("Cache-Control", "public, max-age=60, must-revalidate")],
+        ));
+    }
+
+    serde_json::from_str::<RangeBlocksAPIResponse>(body).map_err(|e| {
+        ErrorResponse::with_status_and_headers(
+            anyhow!("Cannot decode range blocks response: {e}; body: {body_summary}"),
+            StatusCode::BAD_GATEWAY,
+            &[("Cache-Control", "public, max-age=60, must-revalidate")],
+        )
+    })
 }
 
 async fn fetch_range_blocks(
@@ -278,23 +423,22 @@ async fn fetch_range_blocks(
             tracing::error!("Cannot parse range blocks: {e:#}");
             ErrorResponse::with_status_and_headers(
                 anyhow!("{e:#}"),
-                StatusCode::INTERNAL_SERVER_ERROR,
+                StatusCode::BAD_GATEWAY,
                 &[("Cache-Control", "public, max-age=60, must-revalidate")],
             )
         })?;
 
-    let range_blocks = response
-        .json::<RangeBlocksAPIResponse>()
-        .await
-        .map_err(|e| {
-            tracing::error!("Cannot parse range blocks: {e:#}");
-            ErrorResponse::with_status_and_headers(
-                anyhow!("{e:#}"),
-                StatusCode::INTERNAL_SERVER_ERROR,
-                &[("Cache-Control", "public, max-age=60, must-revalidate")],
-            )
-        })?;
-    Ok(range_blocks)
+    let status = response.status();
+    let body = response.text().await.map_err(|e| {
+        tracing::error!("Cannot read range blocks response body: {e:#}");
+        ErrorResponse::with_status_and_headers(
+            anyhow!("{e:#}"),
+            StatusCode::BAD_GATEWAY,
+            &[("Cache-Control", "public, max-age=60, must-revalidate")],
+        )
+    })?;
+
+    parse_range_blocks_response(status, &body)
 }
 
 #[inline(always)]
@@ -549,22 +693,22 @@ async fn get_avl_head(
         tracing::error!("❌ Cannot parse range blocks: {e:#}");
         ErrorResponse::with_status_and_headers(
             anyhow!("{e:#}"),
-            StatusCode::INTERNAL_SERVER_ERROR,
+            StatusCode::BAD_GATEWAY,
             &[("Cache-Control", "public, max-age=60, must-revalidate")],
         )
     })?;
 
-    let range_blocks = response
-        .json::<RangeBlocksAPIResponse>()
-        .await
-        .map_err(|e| {
-            tracing::error!("❌ Cannot parse range blocks: {e:#}");
-            ErrorResponse::with_status_and_headers(
-                anyhow!("{e:#}"),
-                StatusCode::INTERNAL_SERVER_ERROR,
-                &[("Cache-Control", "public, max-age=60, must-revalidate")],
-            )
-        })?;
+    let status = response.status();
+    let body = response.text().await.map_err(|e| {
+        tracing::error!("❌ Cannot read range blocks response body: {e:#}");
+        ErrorResponse::with_status_and_headers(
+            anyhow!("{e:#}"),
+            StatusCode::BAD_GATEWAY,
+            &[("Cache-Control", "public, max-age=60, must-revalidate")],
+        )
+    })?;
+
+    let range_blocks = parse_range_blocks_response(status, &body)?;
 
     Ok((
         StatusCode::OK,
@@ -823,6 +967,31 @@ async fn fetch_chain_head(state: Arc<AppState>, chain_id: u64) -> Result<u32> {
     }
 }
 
+fn cleanup_interval_seconds(raw: Option<String>) -> u64 {
+    raw.and_then(|v| v.parse::<u64>().ok())
+        .filter(|seconds| *seconds > 0)
+        .unwrap_or(60)
+}
+
+async fn cleanup_indexed_initiated_transactions(state: &Arc<AppState>) -> Result<()> {
+    sqlx::query_file!("sql/delete_indexed_initiated_tx_global.sql")
+        .execute(&state.db)
+        .await?;
+    Ok(())
+}
+
+async fn cleanup_indexed_initiated_transactions_task(
+    state: Arc<AppState>,
+    cleanup_interval_seconds: u64,
+) {
+    loop {
+        if let Err(e) = cleanup_indexed_initiated_transactions(&state).await {
+            warn!("Indexed initiated tx cleanup failed: {e:#}");
+        }
+        tokio::time::sleep(Duration::from_secs(cleanup_interval_seconds)).await;
+    }
+}
+
 #[tokio::main]
 async fn main() {
     dotenvy::dotenv().ok();
@@ -839,6 +1008,8 @@ async fn main() {
         .ok()
         .and_then(|max_request| max_request.parse::<usize>().ok())
         .unwrap_or(1024);
+    let indexed_tx_cleanup_interval_seconds =
+        cleanup_interval_seconds(env::var("INDEXED_TX_CLEANUP_INTERVAL_SECONDS").ok());
 
     let db_url: String = env::var("POSTGRES_URL").unwrap_or("localhost:5432".to_owned());
     // Connection pool
@@ -963,13 +1134,14 @@ async fn main() {
         )
         .route("/v1/transactions", get(transactions)) // fetch all transaction
         .route("/transactions", get(transactions))
+        .route("/v1/initiate", post(initiate_transaction))
         .route("/v1/head/{chain_id}", get(get_head)) // get head based on chain
         .route("/v1/proof/{chain_id}", get(get_proof)) // get proof for avail based on chain
         .layer(TraceLayer::new_for_http())
         .layer(CompressionLayer::new())
         .layer(
             CorsLayer::new()
-                .allow_methods(vec![Method::GET])
+                .allow_methods(vec![Method::GET, Method::POST])
                 .allow_origin(Any),
         )
         .with_state(shared_state.clone());
@@ -980,6 +1152,7 @@ async fn main() {
         .await
         .unwrap();
 
+    let cleanup_state = shared_state.clone();
     tokio::spawn(async move {
         tracing::info!("Starting head tracking task");
         if let Err(e) = track_slot_avail_task(shared_state.clone()).await {
@@ -987,6 +1160,10 @@ async fn main() {
             process::exit(1);
         }
     });
+    tokio::spawn(cleanup_indexed_initiated_transactions_task(
+        cleanup_state,
+        indexed_tx_cleanup_interval_seconds,
+    ));
     tracing::info!("🚀 Started server on host {} with port {}", host, port);
     axum::serve(listener, app).await.unwrap();
 }
@@ -1090,7 +1267,7 @@ async fn track_slot_avail_task(state: Arc<AppState>) -> Result<()> {
                 let mut slot_block_head = SLOT_BLOCK_HEAD.write().await;
                 tracing::info!("Beacon mapping: {slot}:{bl}");
                 *slot_block_head = Some((slot, bl, hash, timestamp));
-                info!("Timestamp form task: {:?}", timestamp);
+                debug!("Timestamp form task: {:?}", timestamp);
 
                 drop(slot_block_head);
 
@@ -1144,4 +1321,39 @@ fn test_remaining_time_for_helios_update() {
     let update = Utc::now().timestamp() - 1200;
     let remaining = time_until_next_helios_update(update as u64, 3600);
     assert_eq!(2400, remaining.as_secs());
+}
+
+#[test]
+fn cleanup_interval_defaults_to_60_seconds() {
+    assert_eq!(cleanup_interval_seconds(None), 60);
+}
+
+#[test]
+fn cleanup_interval_uses_positive_value() {
+    assert_eq!(cleanup_interval_seconds(Some("15".to_string())), 15);
+}
+
+#[test]
+fn cleanup_interval_rejects_invalid_or_zero() {
+    assert_eq!(cleanup_interval_seconds(Some("0".to_string())), 60);
+    assert_eq!(
+        cleanup_interval_seconds(Some("not-a-number".to_string())),
+        60
+    );
+}
+
+#[test]
+fn parse_range_blocks_response_reports_upstream_status_with_empty_body() {
+    let err = match parse_range_blocks_response(StatusCode::INTERNAL_SERVER_ERROR, "") {
+        Ok(_) => panic!("expected parse_range_blocks_response to fail for 500 response"),
+        Err(err) => err,
+    };
+
+    assert_eq!(err.status_code, Some(StatusCode::BAD_GATEWAY));
+    assert!(
+        err.error
+            .to_string()
+            .contains("Range service returned HTTP 500")
+    );
+    assert!(err.error.to_string().contains("body: <empty>"));
 }
