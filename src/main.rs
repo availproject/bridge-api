@@ -197,7 +197,16 @@ async fn transactions(
         .fetch_all(&state.db)
         .await?;
 
-        let range_blocks = fetch_range_blocks(&state).await?;
+        let range_blocks = match fetch_range_blocks(&state).await {
+            Ok(range_blocks) => Some(range_blocks),
+            Err(err) => {
+                tracing::warn!(
+                    "Failed to fetch range blocks for /v1/transactions: {:#}",
+                    err.error
+                );
+                None
+            }
+        };
 
         let header: Value = state
             .avail_client
@@ -210,32 +219,40 @@ async fn transactions(
         })?;
         let latest_block_number = u32::from_str_radix(&number_hex[2..], 16).unwrap_or(0);
 
-        let claim_estimate = time_until_next_vector_update(
-            latest_block_number,
-            range_blocks.data.end,
-            state.vector_update_frequency,
-            20,
-        );
+        let claim_estimate = range_blocks.as_ref().map(|range_blocks| {
+            time_until_next_vector_update(
+                latest_block_number,
+                range_blocks.data.end,
+                state.vector_update_frequency,
+                20,
+            )
+        });
 
-        tracing::info!(
-            latest_block_number = latest_block_number,
-            range_end = range_blocks.data.end,
-            blocks_since = latest_block_number.saturating_sub(range_blocks.data.end),
-            "time_until_next_vector_update"
-        );
+        if let Some(range_blocks) = range_blocks.as_ref() {
+            tracing::info!(
+                latest_block_number = latest_block_number,
+                range_end = range_blocks.data.end,
+                blocks_since = latest_block_number.saturating_sub(range_blocks.data.end),
+                "time_until_next_vector_update"
+            );
+        }
 
         for mut tx in transactions {
             let mut estimate = None;
 
-            if tx.final_status == BridgeStatusEnum::InProgress
-                && tx.source_block_height < range_blocks.data.end as i32
-            {
-                tx.final_status = BridgeStatusEnum::ClaimReady;
+            if let Some(range_blocks) = range_blocks.as_ref() {
+                if tx.final_status == BridgeStatusEnum::InProgress
+                    && tx.source_block_height < range_blocks.data.end as i32
+                {
+                    tx.final_status = BridgeStatusEnum::ClaimReady;
+                }
             }
             if tx.final_status == BridgeStatusEnum::Initiated
                 || tx.final_status == BridgeStatusEnum::InProgress
             {
-                estimate = Some(claim_estimate.as_secs());
+                if let Some(claim_estimate) = claim_estimate {
+                    estimate = Some(claim_estimate.as_secs());
+                }
             }
 
             transaction_data_results.push(TransactionData::new(
@@ -334,6 +351,48 @@ async fn transactions(
         .into_response())
 }
 
+fn summarize_response_body(body: &str) -> String {
+    let trimmed = body.trim();
+    if trimmed.is_empty() {
+        return "<empty>".to_string();
+    }
+
+    const MAX_CHARS: usize = 256;
+    let mut snippet: String = trimmed.chars().take(MAX_CHARS).collect();
+    if trimmed.chars().count() > MAX_CHARS {
+        snippet.push_str("...");
+    }
+    snippet
+}
+
+fn parse_range_blocks_response(
+    status: StatusCode,
+    body: &str,
+) -> Result<RangeBlocksAPIResponse, ErrorResponse> {
+    let body_summary = summarize_response_body(body);
+
+    if !status.is_success() {
+        let reason = status.canonical_reason().unwrap_or("unknown");
+        return Err(ErrorResponse::with_status_and_headers(
+            anyhow!(
+                "Range service returned HTTP {} ({reason}) with body: {}",
+                status.as_u16(),
+                body_summary
+            ),
+            StatusCode::BAD_GATEWAY,
+            &[("Cache-Control", "public, max-age=60, must-revalidate")],
+        ));
+    }
+
+    serde_json::from_str::<RangeBlocksAPIResponse>(body).map_err(|e| {
+        ErrorResponse::with_status_and_headers(
+            anyhow!("Cannot decode range blocks response: {e}; body: {body_summary}"),
+            StatusCode::BAD_GATEWAY,
+            &[("Cache-Control", "public, max-age=60, must-revalidate")],
+        )
+    })
+}
+
 async fn fetch_range_blocks(
     state: &Arc<AppState>,
 ) -> Result<RangeBlocksAPIResponse, ErrorResponse> {
@@ -355,23 +414,22 @@ async fn fetch_range_blocks(
             tracing::error!("Cannot parse range blocks: {e:#}");
             ErrorResponse::with_status_and_headers(
                 anyhow!("{e:#}"),
-                StatusCode::INTERNAL_SERVER_ERROR,
+                StatusCode::BAD_GATEWAY,
                 &[("Cache-Control", "public, max-age=60, must-revalidate")],
             )
         })?;
 
-    let range_blocks = response
-        .json::<RangeBlocksAPIResponse>()
-        .await
-        .map_err(|e| {
-            tracing::error!("Cannot parse range blocks: {e:#}");
-            ErrorResponse::with_status_and_headers(
-                anyhow!("{e:#}"),
-                StatusCode::INTERNAL_SERVER_ERROR,
-                &[("Cache-Control", "public, max-age=60, must-revalidate")],
-            )
-        })?;
-    Ok(range_blocks)
+    let status = response.status();
+    let body = response.text().await.map_err(|e| {
+        tracing::error!("Cannot read range blocks response body: {e:#}");
+        ErrorResponse::with_status_and_headers(
+            anyhow!("{e:#}"),
+            StatusCode::BAD_GATEWAY,
+            &[("Cache-Control", "public, max-age=60, must-revalidate")],
+        )
+    })?;
+
+    parse_range_blocks_response(status, &body)
 }
 
 #[inline(always)]
@@ -626,22 +684,22 @@ async fn get_avl_head(
         tracing::error!("❌ Cannot parse range blocks: {e:#}");
         ErrorResponse::with_status_and_headers(
             anyhow!("{e:#}"),
-            StatusCode::INTERNAL_SERVER_ERROR,
+            StatusCode::BAD_GATEWAY,
             &[("Cache-Control", "public, max-age=60, must-revalidate")],
         )
     })?;
 
-    let range_blocks = response
-        .json::<RangeBlocksAPIResponse>()
-        .await
-        .map_err(|e| {
-            tracing::error!("❌ Cannot parse range blocks: {e:#}");
-            ErrorResponse::with_status_and_headers(
-                anyhow!("{e:#}"),
-                StatusCode::INTERNAL_SERVER_ERROR,
-                &[("Cache-Control", "public, max-age=60, must-revalidate")],
-            )
-        })?;
+    let status = response.status();
+    let body = response.text().await.map_err(|e| {
+        tracing::error!("❌ Cannot read range blocks response body: {e:#}");
+        ErrorResponse::with_status_and_headers(
+            anyhow!("{e:#}"),
+            StatusCode::BAD_GATEWAY,
+            &[("Cache-Control", "public, max-age=60, must-revalidate")],
+        )
+    })?;
+
+    let range_blocks = parse_range_blocks_response(status, &body)?;
 
     Ok((
         StatusCode::OK,
@@ -1275,4 +1333,20 @@ fn cleanup_interval_rejects_invalid_or_zero() {
         cleanup_interval_seconds(Some("not-a-number".to_string())),
         60
     );
+}
+
+#[test]
+fn parse_range_blocks_response_reports_upstream_status_with_empty_body() {
+    let err = match parse_range_blocks_response(StatusCode::INTERNAL_SERVER_ERROR, "") {
+        Ok(_) => panic!("expected parse_range_blocks_response to fail for 500 response"),
+        Err(err) => err,
+    };
+
+    assert_eq!(err.status_code, Some(StatusCode::BAD_GATEWAY));
+    assert!(
+        err.error
+            .to_string()
+            .contains("Range service returned HTTP 500")
+    );
+    assert!(err.error.to_string().contains("body: <empty>"));
 }

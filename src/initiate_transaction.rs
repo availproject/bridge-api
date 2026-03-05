@@ -117,7 +117,7 @@ async fn initiate_eth_transaction(
             tracing::error!("Failed to fetch ETH receipt: {e:#}");
             ErrorResponse::with_status(
                 anyhow!("Failed to fetch transaction receipt"),
-                StatusCode::BAD_GATEWAY,
+                StatusCode::BAD_REQUEST,
             )
         })?;
 
@@ -267,13 +267,13 @@ async fn fetch_avail_block_timestamp(
             tracing::error!("Failed to fetch Avail block timestamp: {e:#}");
             ErrorResponse::with_status(
                 anyhow!("Failed to fetch block timestamp"),
-                StatusCode::BAD_GATEWAY,
+                StatusCode::BAD_REQUEST,
             )
         })?;
     let bytes = hex::decode(storage_hex.trim_start_matches("0x")).map_err(|_| {
         ErrorResponse::with_status(
             anyhow!("Invalid timestamp encoding"),
-            StatusCode::BAD_GATEWAY,
+            StatusCode::BAD_REQUEST,
         )
     })?;
     let timestamp_bytes: [u8; 8] =
@@ -283,18 +283,44 @@ async fn fetch_avail_block_timestamp(
             .ok_or_else(|| {
                 ErrorResponse::with_status(
                     anyhow!("Invalid timestamp length"),
-                    StatusCode::BAD_GATEWAY,
+                    StatusCode::BAD_REQUEST,
                 )
             })?;
     let timestamp_ms = u64::from_le_bytes(timestamp_bytes);
     Ok((timestamp_ms / 1000) as i64)
 }
 
-async fn initiate_avail_transaction(
+struct AvailBlockExtrinsic {
+    block_hash: String,
+    ext_hex: String,
+}
+
+struct ParsedAvailExtrinsic {
+    bytes: Vec<u8>,
+    hash_hex: String,
+    sender: String,
+    call_offset: usize,
+}
+
+enum AvailSenderMode {
+    Strict,
+    Lenient,
+}
+
+const VECTOR_PALLET_ID: u8 = 39;
+const VECTOR_SEND_MESSAGE_CALL_ID: u8 = 3;
+
+struct DecodedSendMessageCall {
+    message: Message,
+    to: sp_core::H256,
+    domain: u32,
+}
+
+async fn fetch_avail_extrinsic_at_index(
     state: &Arc<AppState>,
     block_number: u32,
     tx_index: u32,
-) -> anyhow::Result<Response, ErrorResponse> {
+) -> anyhow::Result<AvailBlockExtrinsic, ErrorResponse> {
     let block_hash: String = state
         .avail_client
         .request("chain_getBlockHash", rpc_params![block_number])
@@ -303,22 +329,21 @@ async fn initiate_avail_transaction(
             tracing::error!("Failed to fetch Avail block hash: {e:#}");
             ErrorResponse::with_status(
                 anyhow!("Failed to fetch block hash"),
-                StatusCode::BAD_GATEWAY,
+                StatusCode::BAD_REQUEST,
             )
         })?;
 
-    // Fetch block to get the extrinsic and extract signer
     let block: Value = state
         .avail_client
         .request("chain_getBlock", rpc_params![&block_hash])
         .await
         .map_err(|e| {
             tracing::error!("Failed to fetch Avail block: {e:#}");
-            ErrorResponse::with_status(anyhow!("Failed to fetch block"), StatusCode::BAD_GATEWAY)
+            ErrorResponse::with_status(anyhow!("Failed to fetch block"), StatusCode::BAD_REQUEST)
         })?;
 
     let extrinsics = block["block"]["extrinsics"].as_array().ok_or_else(|| {
-        ErrorResponse::with_status(anyhow!("Missing extrinsics"), StatusCode::BAD_GATEWAY)
+        ErrorResponse::with_status(anyhow!("Missing extrinsics"), StatusCode::BAD_REQUEST)
     })?;
 
     let ext_hex = extrinsics
@@ -329,103 +354,154 @@ async fn initiate_avail_transaction(
                 anyhow!("Extrinsic not found at index {tx_index}"),
                 StatusCode::NOT_FOUND,
             )
-        })?;
+        })?
+        .to_string();
 
-    let ext_bytes = hex::decode(ext_hex.trim_start_matches("0x")).map_err(|_| {
+    Ok(AvailBlockExtrinsic {
+        block_hash,
+        ext_hex,
+    })
+}
+
+fn parse_avail_extrinsic(
+    ext_hex: &str,
+    mode: AvailSenderMode,
+) -> anyhow::Result<ParsedAvailExtrinsic, ErrorResponse> {
+    let bytes = hex::decode(ext_hex.trim_start_matches("0x")).map_err(|_| {
         ErrorResponse::with_status(
             anyhow!("Invalid extrinsic encoding"),
-            StatusCode::BAD_GATEWAY,
+            StatusCode::BAD_REQUEST,
         )
     })?;
 
-    // Extrinsic hash matching indexer's ext.metadata.ext_hash
-    let ext_hash_hex = format!("0x{}", hex::encode(blake2_256(&ext_bytes)));
-
-    // Decode extrinsic using SCALE codec cursor
-    let mut cursor = &ext_bytes[..];
+    let hash_hex = format!("0x{}", hex::encode(blake2_256(&bytes)));
+    let mut cursor = &bytes[..];
     let decode_err = |e| {
         ErrorResponse::with_status(
             anyhow!("Failed to decode extrinsic: {e}"),
-            StatusCode::BAD_GATEWAY,
+            StatusCode::BAD_REQUEST,
         )
     };
 
-    // Skip compact length prefix
     <Compact<u32>>::decode(&mut cursor).map_err(decode_err)?;
-
-    // Version byte (0x84 = V4 signed)
     let version = u8::decode(&mut cursor).map_err(decode_err)?;
+    let mut sender = String::new();
+    let mut call_offset = bytes.len() - cursor.len();
 
-    // Extract signer from signed extrinsic
-    let sender = if version & 0x80 != 0 {
-        // MultiAddress::Id = 0x00 + 32 bytes AccountId
+    if version & 0x80 != 0 {
         let addr_type = u8::decode(&mut cursor).map_err(decode_err)?;
         if addr_type != 0x00 {
-            return Err(ErrorResponse::with_status(
-                anyhow!("Unsupported address type"),
-                StatusCode::BAD_GATEWAY,
-            ));
+            return match mode {
+                AvailSenderMode::Lenient => Ok(ParsedAvailExtrinsic {
+                    bytes,
+                    hash_hex,
+                    sender,
+                    call_offset,
+                }),
+                AvailSenderMode::Strict => Err(ErrorResponse::with_status(
+                    anyhow!("Unsupported address type"),
+                    StatusCode::BAD_REQUEST,
+                )),
+            };
         }
+
         let account = <[u8; 32]>::decode(&mut cursor).map_err(decode_err)?;
-        let sender = AccountId32::new(account).to_ss58check();
+        sender = AccountId32::new(account).to_ss58check();
 
-        // Skip MultiSignature
-        let sig_type = u8::decode(&mut cursor).map_err(decode_err)?;
-        match sig_type {
-            0x00 | 0x01 => {
-                <[u8; 64]>::decode(&mut cursor).map_err(decode_err)?;
+        if matches!(mode, AvailSenderMode::Strict) {
+            let sig_type = u8::decode(&mut cursor).map_err(decode_err)?;
+            match sig_type {
+                0x00 | 0x01 => {
+                    <[u8; 64]>::decode(&mut cursor).map_err(decode_err)?;
+                }
+                0x02 => {
+                    <[u8; 65]>::decode(&mut cursor).map_err(decode_err)?;
+                }
+                _ => {
+                    return Err(ErrorResponse::with_status(
+                        anyhow!("Unknown signature type"),
+                        StatusCode::BAD_REQUEST,
+                    ));
+                }
             }
-            0x02 => {
-                <[u8; 65]>::decode(&mut cursor).map_err(decode_err)?;
-            }
-            _ => {
-                return Err(ErrorResponse::with_status(
-                    anyhow!("Unknown signature type"),
-                    StatusCode::BAD_GATEWAY,
-                ));
-            }
-        };
 
-        // Skip SignedExtras: Era + Nonce + Tip + AppId
-        let era = u8::decode(&mut cursor).map_err(decode_err)?;
-        if era != 0x00 {
-            u8::decode(&mut cursor).map_err(decode_err)?; // mortal era second byte
+            let era = u8::decode(&mut cursor).map_err(decode_err)?;
+            if era != 0x00 {
+                u8::decode(&mut cursor).map_err(decode_err)?;
+            }
+            <Compact<u32>>::decode(&mut cursor).map_err(decode_err)?;
+            <Compact<u128>>::decode(&mut cursor).map_err(decode_err)?;
+            <Compact<u32>>::decode(&mut cursor).map_err(decode_err)?;
         }
-        <Compact<u32>>::decode(&mut cursor).map_err(decode_err)?; // nonce
-        <Compact<u128>>::decode(&mut cursor).map_err(decode_err)?; // tip
-        <Compact<u32>>::decode(&mut cursor).map_err(decode_err)?; // app_id
 
-        sender
-    } else {
-        String::new()
+        call_offset = bytes.len() - cursor.len();
+    }
+
+    Ok(ParsedAvailExtrinsic {
+        bytes,
+        hash_hex,
+        sender,
+        call_offset,
+    })
+}
+
+fn decode_send_message_call(
+    call_bytes: &[u8],
+) -> anyhow::Result<DecodedSendMessageCall, ErrorResponse> {
+    let mut cursor = call_bytes;
+    let decode_err = |e| {
+        ErrorResponse::with_status(
+            anyhow!("Failed to decode extrinsic: {e}"),
+            StatusCode::BAD_REQUEST,
+        )
     };
 
-    // Skip pallet_id + call_id
-    <[u8; 2]>::decode(&mut cursor).map_err(decode_err)?;
+    let header = <[u8; 2]>::decode(&mut cursor).map_err(decode_err)?;
+    if header != [VECTOR_PALLET_ID, VECTOR_SEND_MESSAGE_CALL_ID] {
+        return Err(ErrorResponse::with_status(
+            anyhow!("Transaction is not a Vector::SendMessage call"),
+            StatusCode::BAD_REQUEST,
+        ));
+    }
 
-    // Decode SendMessage params: Message + to (H256)
     let message = Message::decode(&mut cursor).map_err(decode_err)?;
     let to = sp_core::H256::decode(&mut cursor).map_err(decode_err)?;
+    let domain = <Compact<u32>>::decode(&mut cursor).map_err(decode_err)?.0;
 
-    let amount = match &message {
+    Ok(DecodedSendMessageCall {
+        message,
+        to,
+        domain,
+    })
+}
+
+async fn initiate_avail_transaction(
+    state: &Arc<AppState>,
+    block_number: u32,
+    tx_index: u32,
+) -> anyhow::Result<Response, ErrorResponse> {
+    let avail_ext = fetch_avail_extrinsic_at_index(state, block_number, tx_index).await?;
+    let parsed_ext = parse_avail_extrinsic(&avail_ext.ext_hex, AvailSenderMode::Strict)?;
+    let call = decode_send_message_call(&parsed_ext.bytes[parsed_ext.call_offset..])?;
+    let amount = match &call.message {
         Message::FungibleToken { amount, .. } => amount.to_string(),
         _ => "0".to_string(),
     };
-    let receiver = format!("0x{}", hex::encode(to.as_bytes()));
+    let receiver = format!("0x{}", hex::encode(call.to.as_bytes()));
 
     // ID matching indexer's (block_height << 32) | ext_index
     let message_id = ((block_number as u64) << 32 | tx_index as u64).to_string();
-    let timestamp = fetch_avail_block_timestamp(&state.avail_client, &block_hash).await?;
+    let timestamp = fetch_avail_block_timestamp(&state.avail_client, &avail_ext.block_hash).await?;
 
     sqlx::query_file!(
         "sql/insert_initiated_tx.sql",
-        &ext_hash_hex,
+        &parsed_ext.hash_hex,
         "AvailEth",
         &message_id,
-        &sender,
+        &parsed_ext.sender,
         &receiver,
         &amount,
-        &block_hash,
+        &avail_ext.block_hash,
         block_number as i32,
         tx_index as i32,
         timestamp,
@@ -453,7 +529,7 @@ async fn claim_eth_transaction(
             tracing::error!("Failed to fetch ETH receipt: {e:#}");
             ErrorResponse::with_status(
                 anyhow!("Failed to fetch transaction receipt"),
-                StatusCode::BAD_GATEWAY,
+                StatusCode::BAD_REQUEST,
             )
         })?;
 
@@ -481,19 +557,7 @@ async fn claim_eth_transaction(
             ErrorResponse::with_status(anyhow!("Invalid blockNumber"), StatusCode::BAD_REQUEST)
         })?;
 
-    let tx: Value = state
-        .ethereum_client
-        .request("eth_getTransactionByHash", rpc_params![eth_tx_hash])
-        .await
-        .map_err(|e| {
-            tracing::error!("Failed to fetch ETH transaction: {e:#}");
-            ErrorResponse::with_status(
-                anyhow!("Failed to fetch transaction"),
-                StatusCode::BAD_REQUEST,
-            )
-        })?;
-
-    let sender = tx["from"].as_str().unwrap_or("").to_string();
+    let sender = extract_eth_claim_sender(&receipt, state.bridge_contract_address.as_str())?;
 
     let block: Value = state
         .ethereum_client
@@ -555,24 +619,7 @@ fn extract_eth_claim_message_id(
     receipt: &Value,
     bridge_contract_address: &str,
 ) -> anyhow::Result<U256, ErrorResponse> {
-    let logs = receipt["logs"].as_array().ok_or_else(|| {
-        ErrorResponse::with_status(anyhow!("Missing logs"), StatusCode::BAD_REQUEST)
-    })?;
-
-    let claim_log = logs
-        .iter()
-        .find(|log| {
-            log["address"]
-                .as_str()
-                .map(|address| address.eq_ignore_ascii_case(bridge_contract_address))
-                .unwrap_or(false)
-        })
-        .ok_or_else(|| {
-            ErrorResponse::with_status(
-                anyhow!("Claim event not found in transaction"),
-                StatusCode::BAD_REQUEST,
-            )
-        })?;
+    let claim_log = find_eth_claim_log(receipt, bridge_contract_address)?;
 
     let data_hex = claim_log["data"].as_str().ok_or_else(|| {
         ErrorResponse::with_status(anyhow!("Missing claim event data"), StatusCode::BAD_REQUEST)
@@ -591,6 +638,70 @@ fn extract_eth_claim_message_id(
     Ok(U256::from_be_slice(&data_bytes[data_bytes.len() - 32..]))
 }
 
+fn extract_eth_claim_sender(
+    receipt: &Value,
+    bridge_contract_address: &str,
+) -> anyhow::Result<String, ErrorResponse> {
+    let claim_log = find_eth_claim_log(receipt, bridge_contract_address)?;
+    let sender_topic = claim_log["topics"][1].as_str().ok_or_else(|| {
+        ErrorResponse::with_status(
+            anyhow!("Missing claim event sender topic"),
+            StatusCode::BAD_REQUEST,
+        )
+    })?;
+
+    let sender_topic_hex = sender_topic.strip_prefix("0x").ok_or_else(|| {
+        ErrorResponse::with_status(
+            anyhow!("Invalid claim event sender topic"),
+            StatusCode::BAD_REQUEST,
+        )
+    })?;
+    if sender_topic_hex.len() != 64 {
+        return Err(ErrorResponse::with_status(
+            anyhow!("Invalid claim event sender topic"),
+            StatusCode::BAD_REQUEST,
+        ));
+    }
+
+    let sender_bytes = hex::decode(sender_topic_hex).map_err(|_| {
+        ErrorResponse::with_status(
+            anyhow!("Invalid claim event sender topic"),
+            StatusCode::BAD_REQUEST,
+        )
+    })?;
+    let sender_array: [u8; 32] = sender_bytes.try_into().map_err(|_| {
+        ErrorResponse::with_status(
+            anyhow!("Invalid claim event sender topic"),
+            StatusCode::BAD_REQUEST,
+        )
+    })?;
+
+    Ok(AccountId32::new(sender_array).to_ss58check())
+}
+
+fn find_eth_claim_log<'a>(
+    receipt: &'a Value,
+    bridge_contract_address: &str,
+) -> anyhow::Result<&'a Value, ErrorResponse> {
+    let logs = receipt["logs"].as_array().ok_or_else(|| {
+        ErrorResponse::with_status(anyhow!("Missing logs"), StatusCode::BAD_REQUEST)
+    })?;
+
+    logs.iter()
+        .find(|log| {
+            log["address"]
+                .as_str()
+                .map(|address| address.eq_ignore_ascii_case(bridge_contract_address))
+                .unwrap_or(false)
+        })
+        .ok_or_else(|| {
+            ErrorResponse::with_status(
+                anyhow!("Claim event not found in transaction"),
+                StatusCode::BAD_REQUEST,
+            )
+        })
+}
+
 async fn claim_avail_transaction(
     state: &Arc<AppState>,
     block_number: u32,
@@ -599,88 +710,23 @@ async fn claim_avail_transaction(
 ) -> anyhow::Result<Response, ErrorResponse> {
     let requested_message_id = validate_message_id(message_id)?;
 
-    let block_hash: String = state
-        .avail_client
-        .request("chain_getBlockHash", rpc_params![block_number])
-        .await
-        .map_err(|e| {
-            tracing::error!("Failed to fetch Avail block hash: {e:#}");
-            ErrorResponse::with_status(
-                anyhow!("Failed to fetch block hash"),
-                StatusCode::BAD_GATEWAY,
-            )
-        })?;
-
-    // Verify extrinsic exists
-    let block: Value = state
-        .avail_client
-        .request("chain_getBlock", rpc_params![&block_hash])
-        .await
-        .map_err(|e| {
-            tracing::error!("Failed to fetch Avail block: {e:#}");
-            ErrorResponse::with_status(anyhow!("Failed to fetch block"), StatusCode::BAD_GATEWAY)
-        })?;
-
-    let extrinsics = block["block"]["extrinsics"].as_array().ok_or_else(|| {
-        ErrorResponse::with_status(anyhow!("Missing extrinsics"), StatusCode::BAD_GATEWAY)
-    })?;
-
-    let ext_hex = extrinsics
-        .get(tx_index as usize)
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| {
-            ErrorResponse::with_status(
-                anyhow!("Extrinsic not found at index {tx_index}"),
-                StatusCode::NOT_FOUND,
-            )
-        })?;
-
-    let ext_bytes = hex::decode(ext_hex.trim_start_matches("0x")).map_err(|_| {
-        ErrorResponse::with_status(
-            anyhow!("Invalid extrinsic encoding"),
-            StatusCode::BAD_GATEWAY,
-        )
-    })?;
-
-    let ext_hash_hex = format!("0x{}", hex::encode(blake2_256(&ext_bytes)));
-    let indexed_message_id = fetch_avail_claim_message_id_by_ext_hash(state, &ext_hash_hex).await?;
+    let avail_ext = fetch_avail_extrinsic_at_index(state, block_number, tx_index).await?;
+    let parsed_ext = parse_avail_extrinsic(&avail_ext.ext_hex, AvailSenderMode::Lenient)?;
+    let indexed_message_id =
+        fetch_avail_claim_message_id_by_ext_hash(state, &parsed_ext.hash_hex).await?;
     ensure_message_id_matches(requested_message_id, indexed_message_id)?;
 
-    // Decode sender from extrinsic
-    let mut cursor = &ext_bytes[..];
-    let decode_err = |e| {
-        ErrorResponse::with_status(
-            anyhow!("Failed to decode extrinsic: {e}"),
-            StatusCode::BAD_GATEWAY,
-        )
-    };
-
-    <Compact<u32>>::decode(&mut cursor).map_err(decode_err)?;
-    let version = u8::decode(&mut cursor).map_err(decode_err)?;
-
-    let sender = if version & 0x80 != 0 {
-        let addr_type = u8::decode(&mut cursor).map_err(decode_err)?;
-        if addr_type != 0x00 {
-            String::new()
-        } else {
-            let account = <[u8; 32]>::decode(&mut cursor).map_err(decode_err)?;
-            AccountId32::new(account).to_ss58check()
-        }
-    } else {
-        String::new()
-    };
-
-    let timestamp = fetch_avail_block_timestamp(&state.avail_client, &block_hash).await?;
+    let timestamp = fetch_avail_block_timestamp(&state.avail_client, &avail_ext.block_hash).await?;
 
     sqlx::query_file!(
         "sql/insert_initiated_tx.sql",
-        &ext_hash_hex,
+        &parsed_ext.hash_hex,
         "EthAvail",
         message_id,
-        &sender,
+        &parsed_ext.sender,
         "",
         "0",
-        &block_hash,
+        &avail_ext.block_hash,
         block_number as i32,
         tx_index as i32,
         timestamp,
@@ -722,6 +768,7 @@ LIMIT 1
 #[cfg(test)]
 mod tests {
     use super::*;
+    use parity_scale_codec::Encode;
     use serde_json::json;
 
     #[test]
@@ -751,6 +798,29 @@ mod tests {
     }
 
     #[test]
+    fn eth_claim_sender_is_decoded_from_claim_event_topic() {
+        let receipt = json!({
+            "logs": [{
+                "address": "0x967F7DdC4ec508462231849AE81eeaa68Ad01389",
+                "topics": [
+                    "0x4ad8286366216a121ffbecdd11163a134fc364cdf7cc99aae4cc3221d8d92269",
+                    "0xcc2fd60dbb2ffedcab868872ea8d8c532759025bb1a9b26c5571dea8da223a3f",
+                    "0x00000000000000000000000048e7e157cf873c15a5a6734ea37c000e1cb2383d"
+                ],
+                "data": "0x000000000000000000000000000000000000000000000000002e0fd200000001"
+            }]
+        });
+
+        let sender =
+            extract_eth_claim_sender(&receipt, "0x967F7DdC4ec508462231849AE81eeaa68Ad01389");
+
+        assert_eq!(
+            sender.ok(),
+            Some("5GgRqSNN1zTsjA6N7cofcdP9yewA6JG83S649HbuBut8MG4o".to_string())
+        );
+    }
+
+    #[test]
     fn message_id_match_accepts_equal_values() {
         let requested = U256::from(42);
         let derived = U256::from(42);
@@ -762,5 +832,78 @@ mod tests {
         let requested = U256::from(42);
         let derived = U256::from(43);
         assert!(ensure_message_id_matches(requested, derived).is_err());
+    }
+
+    fn hex_from_extrinsic_body(body: Vec<u8>) -> String {
+        let mut ext = Compact(body.len() as u32).encode();
+        ext.extend_from_slice(&body);
+        format!("0x{}", hex::encode(ext))
+    }
+
+    #[test]
+    fn parse_avail_extrinsic_strict_extracts_sender_and_call_offset() {
+        let mut body = vec![0x84, 0x00];
+        body.extend_from_slice(&[0x11; 32]);
+        body.push(0x00);
+        body.extend_from_slice(&[0x22; 64]);
+        body.push(0x00);
+        body.extend_from_slice(&Compact(0u32).encode());
+        body.extend_from_slice(&Compact(0u128).encode());
+        body.extend_from_slice(&Compact(0u32).encode());
+        body.extend_from_slice(&[0x09, 0x00, 0xAA, 0xBB]);
+
+        let ext_hex = hex_from_extrinsic_body(body);
+        let parsed_result = parse_avail_extrinsic(&ext_hex, AvailSenderMode::Strict);
+        assert!(parsed_result.is_ok());
+        let parsed = parsed_result.ok().unwrap();
+
+        assert_eq!(parsed.sender, AccountId32::new([0x11; 32]).to_ss58check());
+        assert_eq!(
+            &parsed.bytes[parsed.call_offset..parsed.call_offset + 2],
+            &[0x09, 0x00]
+        );
+        assert!(parsed.hash_hex.starts_with("0x"));
+    }
+
+    #[test]
+    fn parse_avail_extrinsic_lenient_allows_non_accountid_address_type() {
+        let ext_hex = hex_from_extrinsic_body(vec![0x84, 0x01]);
+        let parsed_result = parse_avail_extrinsic(&ext_hex, AvailSenderMode::Lenient);
+        assert!(parsed_result.is_ok());
+        let parsed = parsed_result.ok().unwrap();
+
+        assert_eq!(parsed.sender, "");
+        assert!(parsed.hash_hex.starts_with("0x"));
+    }
+
+    #[test]
+    fn parse_avail_extrinsic_strict_rejects_non_accountid_address_type() {
+        let ext_hex = hex_from_extrinsic_body(vec![0x84, 0x01]);
+        assert!(parse_avail_extrinsic(&ext_hex, AvailSenderMode::Strict).is_err());
+    }
+
+    #[test]
+    fn decode_send_message_call_rejects_non_send_message_call() {
+        let call = vec![0x09, 0x00, 0xAA, 0xBB];
+        assert!(decode_send_message_call(&call).is_err());
+    }
+
+    #[test]
+    fn decode_send_message_call_decodes_valid_vector_send_message() {
+        use parity_scale_codec::Encode;
+
+        let message = Message::FungibleToken {
+            asset_id: sp_core::H256::from([0xAB; 32]),
+            amount: 42,
+        };
+        let mut call = vec![VECTOR_PALLET_ID, VECTOR_SEND_MESSAGE_CALL_ID];
+        call.extend_from_slice(&message.encode());
+        call.extend_from_slice(&sp_core::H256::from([0xCD; 32]).encode());
+        call.extend_from_slice(&Compact(7u32).encode());
+
+        let decoded_result = decode_send_message_call(&call);
+        assert!(decoded_result.is_ok());
+        let decoded = decoded_result.ok().unwrap();
+        assert_eq!(decoded.domain, 7);
     }
 }
