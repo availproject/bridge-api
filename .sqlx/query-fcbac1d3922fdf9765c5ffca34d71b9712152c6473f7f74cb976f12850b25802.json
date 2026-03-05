@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT aet.message_id::text\nFROM avail_execute_table aet\nJOIN avail_indexer ai ON ai.id = aet.id\nWHERE ai.ext_hash = $1\nLIMIT 1\n",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "message_id",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "fcbac1d3922fdf9765c5ffca34d71b9712152c6473f7f74cb976f12850b25802"
+}

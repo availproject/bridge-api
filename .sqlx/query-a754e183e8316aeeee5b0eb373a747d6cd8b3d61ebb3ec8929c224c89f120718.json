@@ -1,0 +1,12 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM initiated_transactions it\nWHERE\n    -- Clean up initiate records when source tx is indexed.\n    (it.tx_type = 'initiate' AND it.direction = 'EthAvail' AND EXISTS (\n        SELECT 1 FROM bridge_event be\n        WHERE be.source_transaction_hash = it.source_transaction_hash\n    ))\n    OR (it.tx_type = 'initiate' AND it.direction = 'AvailEth' AND EXISTS (\n        SELECT 1 FROM avail_indexer ai\n        WHERE ai.ext_hash = it.source_transaction_hash\n    ))\n    -- Clean up claim records when claim tx is indexed.\n    OR (it.tx_type = 'claim' AND it.direction = 'AvailEth' AND EXISTS (\n        SELECT 1 FROM bridge_event be\n        WHERE be.message_id::text = it.message_id\n          AND be.event_type = 'MessageReceived'\n    ))\n    OR (it.tx_type = 'claim' AND it.direction = 'EthAvail' AND EXISTS (\n        SELECT 1 FROM avail_execute_table aet\n        WHERE aet.message_id::text = it.message_id\n    ));\n",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": []
+  },
+  "hash": "a754e183e8316aeeee5b0eb373a747d6cd8b3d61ebb3ec8929c224c89f120718"
+}

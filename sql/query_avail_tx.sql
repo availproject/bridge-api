@@ -6,7 +6,7 @@ SELECT ai.id                          AS message_id,
        ai.ext_hash                    AS source_transaction_hash,
        ai.block_height                AS source_block_height,
        ai.ext_index                   AS source_tx_index,
-       ai.block_timestamp,
+       EXTRACT(EPOCH FROM ai.block_timestamp)::bigint AS "block_timestamp!",
        be.source_transaction_hash     AS "destination_tx_hash?: String",
        COALESCE(
                CASE

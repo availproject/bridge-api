@@ -284,7 +284,10 @@ async fn transactions(
     )
     .fetch_all(&state.db)
     .await
-    .unwrap_or_default();
+    .unwrap_or_else(|e| {
+        tracing::warn!("Failed to fetch initiated transactions: {e:#}");
+        vec![]
+    });
 
     for row in &initiated {
         let direction = if row.direction == "EthAvail" {
@@ -323,15 +326,21 @@ async fn transactions(
             ClaimedTransactionRow,
             "sql/query_claimed_tx.sql",
             &message_ids,
+            eth_addr_for_initiated.as_deref().unwrap_or(""),
+            avail_addr_for_initiated.as_deref().unwrap_or("")
         )
         .fetch_all(&state.db)
         .await
-        .unwrap_or_default();
+        .unwrap_or_else(|e| {
+            tracing::warn!("Failed to fetch claimed transactions: {e:#}");
+            vec![]
+        });
 
         for claim in &claims {
+            let claim_id: BigDecimal = claim.message_id.parse().unwrap_or_default();
             if let Some(tx) = transaction_data_results
                 .iter_mut()
-                .find(|t| t.message_id.to_string() == claim.message_id)
+                .find(|t| t.message_id == claim_id && t.status == BridgeStatusEnum::Initiated)
             {
                 tx.status = BridgeStatusEnum::Bridged;
                 tx.destination_tx_hash = Some(claim.source_transaction_hash.clone());
@@ -965,11 +974,9 @@ fn cleanup_interval_seconds(raw: Option<String>) -> u64 {
 }
 
 async fn cleanup_indexed_initiated_transactions(state: &Arc<AppState>) -> Result<()> {
-    sqlx::query(include_str!(
-        "../sql/delete_indexed_initiated_tx_global.sql"
-    ))
-    .execute(&state.db)
-    .await?;
+    sqlx::query_file!("sql/delete_indexed_initiated_tx_global.sql")
+        .execute(&state.db)
+        .await?;
     Ok(())
 }
 

@@ -742,18 +742,11 @@ async fn fetch_avail_claim_message_id_by_ext_hash(
     state: &Arc<AppState>,
     ext_hash: &str,
 ) -> anyhow::Result<U256, ErrorResponse> {
-    let message_id_text: Option<String> = sqlx::query_scalar(
-        r#"
-SELECT aet.message_id::text
-FROM avail_execute_table aet
-JOIN avail_indexer ai ON ai.id = aet.id
-WHERE ai.ext_hash = $1
-LIMIT 1
-        "#,
-    )
-    .bind(ext_hash)
-    .fetch_optional(&state.db)
-    .await?;
+    let message_id_text: Option<String> =
+        sqlx::query_file_scalar!("sql/query_avail_claim_message_id.sql", ext_hash)
+            .fetch_optional(&state.db)
+            .await?
+            .flatten();
 
     let message_id_text = message_id_text.ok_or_else(|| {
         ErrorResponse::with_status(
