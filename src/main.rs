@@ -308,7 +308,7 @@ async fn get_eth_proof(
         cloned_state
             .avail_client
             .request(
-                "kate_queryDataProof",
+                "bridge_queryDataProof",
                 rpc_params![index_struct.index, &block_hash],
             )
             .await
@@ -780,7 +780,7 @@ fn spawn_kate_proof(
     tokio::spawn(async move {
         state
             .avail_client
-            .request("kate_queryDataProof", rpc_params![index, &block_hash])
+            .request("bridge_queryDataProof", rpc_params![index, &block_hash])
             .await
     })
 }
