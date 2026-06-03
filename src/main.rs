@@ -308,7 +308,7 @@ async fn get_eth_proof(
         cloned_state
             .avail_client
             .request(
-                "kate_queryDataProof",
+                "bridge_queryDataProof",
                 rpc_params![index_struct.index, &block_hash],
             )
             .await
@@ -334,9 +334,9 @@ async fn get_eth_proof(
     });
     let (data_proof, merkle_proof_response) =
         join!(data_proof_response_fut, mekrle_proof_response_fut);
-    let data_proof_res: KateQueryDataProofResponse = data_proof
+    let data_proof_res: BridgeQueryDataProofResponse = data_proof
         .map_err(|e| {
-            tracing::error!("❌ Failed to fetch the kate query data. Error: {e:#}");
+            tracing::error!("❌ Failed to fetch the bridge query data proof. Error: {e:#}");
             ErrorResponse::with_status_and_headers(
                 anyhow::anyhow!("Something went wrong."),
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -344,9 +344,9 @@ async fn get_eth_proof(
             )
         })?
         .map_err(|e| {
-            tracing::error!("❌ Failed to get the kate query data. Error: {e:#}");
+            tracing::error!("❌ Failed to get the bridge query data proof. Error: {e:#}");
             ErrorResponse::with_status_and_headers(
-                anyhow::anyhow!("Failed to get the kate query data."),
+                anyhow::anyhow!("Failed to get the bridge query data proof."),
                 StatusCode::BAD_REQUEST,
                 &[("Cache-Control", "public, max-age=60, must-revalidate")],
             )
@@ -679,7 +679,7 @@ async fn get_proof(
         }
     }
 
-    let data_proof_response_fut = spawn_kate_proof(state.clone(), index, block_hash);
+    let data_proof_response_fut = spawn_data_proof(state.clone(), index, block_hash);
     let merkle_proof_range_fut = spawn_merkle_proof_range_fetch(state.clone(), block_hash);
     let (data_proof, range_response) = join!(data_proof_response_fut, merkle_proof_range_fut);
 
@@ -697,9 +697,9 @@ async fn get_proof(
                 || err_str.contains("Cannot fetch tx data")
                 || err_str.contains("is not finalized");
             if is_warn {
-                tracing::warn!("Cannot get kate data proof response: {:?}", e);
+                tracing::warn!("Cannot get bridge data proof response: {:?}", e);
             } else {
-                tracing::error!("Cannot get kate data proof response: {:?}", e);
+                tracing::error!("Cannot get bridge data proof response: {:?}", e);
             }
             ErrorResponse::with_status_and_headers(
                 anyhow!("error: {e:#}"),
@@ -771,16 +771,16 @@ async fn get_proof(
         .into_response())
 }
 
-// spawn_kate_proof fetch queryDataProof from Avail chain
-fn spawn_kate_proof(
+// spawn_data_proof fetches queryDataProof from Avail chain.
+fn spawn_data_proof(
     state: Arc<AppState>,
     index: u32,
     block_hash: B256,
-) -> JoinHandle<Result<KateQueryDataProofResponse, ClientError>> {
+) -> JoinHandle<Result<BridgeQueryDataProofResponse, ClientError>> {
     tokio::spawn(async move {
         state
             .avail_client
-            .request("kate_queryDataProof", rpc_params![index, &block_hash])
+            .request("bridge_queryDataProof", rpc_params![index, &block_hash])
             .await
     })
 }
