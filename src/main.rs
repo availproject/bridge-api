@@ -840,15 +840,18 @@ async fn main() {
         .and_then(|max_request| max_request.parse::<usize>().ok())
         .unwrap_or(1024);
 
-    let db_url: String = env::var("POSTGRES_URL").unwrap_or("localhost:5432".to_owned());
-    // Connection pool
-    let connections_string = format!(
-        "postgresql://{}:{}@{}/{}",
-        env::var("PG_USERNAME").unwrap_or("avail".to_owned()),
-        env::var("PG_PASSWORD").unwrap_or("avail".to_owned()),
-        db_url,
-        env::var("POSTGRES_DB").unwrap_or("ui-indexer".to_owned()),
-    );
+    // Prefer a full connection string (DATABASE_URL) when provided; otherwise assemble
+    // one from the individual POSTGRES_URL / PG_USERNAME / PG_PASSWORD / POSTGRES_DB parts.
+    let connections_string = env::var("DATABASE_URL").unwrap_or_else(|_| {
+        let db_url = env::var("POSTGRES_URL").unwrap_or("localhost:5432".to_owned());
+        format!(
+            "postgresql://{}:{}@{}/{}",
+            env::var("PG_USERNAME").unwrap_or("avail".to_owned()),
+            env::var("PG_PASSWORD").unwrap_or("avail".to_owned()),
+            db_url,
+            env::var("POSTGRES_DB").unwrap_or("ui-indexer".to_owned()),
+        )
+    });
 
     let db = PgPool::connect(&connections_string)
         .await
