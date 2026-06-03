@@ -539,7 +539,7 @@ async fn get_avl_head(
     State(state): State<Arc<AppState>>,
 ) -> Result<impl IntoResponse, ErrorResponse> {
     let url = format!(
-        "{}/{}/?contractChainId={}&contractAddress={}",
+        "{}/{}?contractChainId={}&contractAddress={}",
         state.merkle_proof_service_base_url,
         "range",
         state.contract_chain_id,
