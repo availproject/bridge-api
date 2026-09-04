@@ -2,13 +2,15 @@
 # Deploy source: v2.0.1-rc4 (= what hex runs against an infinity chain) —
 # contains the infinity bridge_queryDataProof RPC fix, DATABASE_URL support,
 # and the MPS /range URL fix.
-# All env vars the binary reads are listed ACTIVE (coordinator convention):
-# real values where decided, SET-BEFORE-DEPLOY where chain-dependent,
-# SET-OR-DELETE-BEFORE-DEPLOY for optionals with code defaults (delete the
-# line on deploy day to get default behavior; invalid values fail fast if
-# forgotten). Secrets stay OUT of [env]: ETHEREUM_CLIENT_URL, BEACONCHAIN_URL,
-# DATABASE_URL via secret:k8s (DATABASE_URL takes precedence over the PG_*
-# fallback quartet, which we do not wire).
+#
+# Convention: every env var the binary reads is listed here. Nothing is deleted —
+# an absent var is invisible on deploy day, a placeholder is not.
+#   SET-BEFORE-DEPLOY           chain-dependent, no value decided yet
+#   SET-OR-DELETE-BEFORE-DEPLOY optional, has a code default (listed below each)
+#
+# Secrets stay OUT of [env]. They are declared in [k8s_secrets], which records only
+# the path to a cluster Secret key; values live on the cluster and never in git.
+# DATABASE_URL takes precedence over the PG_* fallback quartet, which we do not wire.
 
 [network]
 port = 8080
@@ -19,20 +21,44 @@ cpu_limit = "1"
 memory_request = "256Mi"
 memory_limit = "1Gi"
 
+# Declaring a key here does not require its value to exist yet. But every value must
+# be written before the app is unparked, or vals fails at helmfile apply:
+#   ssh porto secret:k8s:write bridge/testnet/bridge-api KEY=value
+[k8s_secrets]
+ETHEREUM_CLIENT_URL = "default/porto-bridge-testnet-bridge-api/ETHEREUM_CLIENT_URL"
+BEACONCHAIN_URL = "default/porto-bridge-testnet-bridge-api/BEACONCHAIN_URL"
+DATABASE_URL = "default/porto-bridge-testnet-bridge-api/DATABASE_URL"
+
 [env]
 HOST = "0.0.0.0"
 PORT = "8080"
 
-# --- chain-dependent: fill on deploy day ---
+# --- chain-dependent: not yet defined, fill on deploy day ---
+# What each one does if the placeholder is left in place:
+#   AVAIL_CLIENT_URL                 panics at startup — HttpClientBuilder::build().unwrap()
+#   AVAIL_CHAIN_NAME                 used literally, breaks at request time
+#   BRIDGE_CONTRACT_ADDRESS          used literally, breaks at request time
+#   VECTORX_CONTRACT_ADDRESS         used literally, breaks at request time
+#   CHAIN_11155111_CONTRACT_ADDRESS  SILENT — the parse failure sits inside a
+#                                    filter_map, so Sepolia is dropped from the
+#                                    chains map with no log line and no error
+# On turing, CHAIN_11155111_CONTRACT_ADDRESS equals VECTORX_CONTRACT_ADDRESS
+# (0xe542dB219a7e2b29C7AEaEAce242c9a2Cd528F96). Confirm that still holds here.
 AVAIL_CHAIN_NAME = "SET-BEFORE-DEPLOY"
 AVAIL_CLIENT_URL = "SET-BEFORE-DEPLOY"
 BRIDGE_CONTRACT_ADDRESS = "SET-BEFORE-DEPLOY"
 VECTORX_CONTRACT_ADDRESS = "SET-BEFORE-DEPLOY"
 CHAIN_11155111_CONTRACT_ADDRESS = "SET-BEFORE-DEPLOY"
 
+# Sepolia RPC. Was a free public node (ethereum-sepolia-rpc.publicnode.com); turing
+# keeps the equivalent private via SSM because the proof endpoints hit Sepolia hard
+# enough to get rate-limited. On turing this is the SAME value as ETHEREUM_CLIENT_URL.
+# Once a private endpoint exists, move this line to [k8s_secrets] rather than
+# putting a public URL back.
+CHAIN_11155111_RPC_URL = "SET-BEFORE-DEPLOY"
+
 # --- decided ---
 CONTRACT_CHAIN_ID = "11155111"
-CHAIN_11155111_RPC_URL = "https://ethereum-sepolia-rpc.publicnode.com"
 MERKLE_PROOF_SERVICE_URL = "http://bridge-testnet-merkle-proof-service.default.svc.cluster.local:3000/api"
 ETH_HEAD_CACHE_MAXAGE = "30"
 AVL_HEAD_CACHE_MAXAGE = "60"
@@ -41,10 +67,16 @@ HELIOS_UPDATE_FREQUENCY = "3600"
 VECTOR_UPDATE_FREQUENCY = "360"
 
 # --- optionals with code defaults ---
-MAX_CONCURRENT_REQUEST = "SET-OR-DELETE-BEFORE-DEPLOY"
-HEAD_CACHE_MAXAGE = "SET-OR-DELETE-BEFORE-DEPLOY"
-PROOF_CACHE_MAXAGE = "SET-OR-DELETE-BEFORE-DEPLOY"
-AVL_PROOF_CACHE_MAXAGE = "SET-OR-DELETE-BEFORE-DEPLOY"
-ETH_PROOF_CACHE_MAXAGE = "SET-OR-DELETE-BEFORE-DEPLOY"
-SLOT_MAPPING_CACHE_MAXAGE = "SET-OR-DELETE-BEFORE-DEPLOY"
-TRANSACTIONS_CACHE_MAXAGE = "SET-OR-DELETE-BEFORE-DEPLOY"
+# Each is read as .ok().and_then(parse).unwrap_or(default), so a leftover placeholder
+# yields the default SILENTLY — it does not fail. Turing sets none of them, so
+# deleting these lines on deploy day reproduces turing behaviour exactly.
+MAX_CONCURRENT_REQUEST = "SET-OR-DELETE-BEFORE-DEPLOY"     # default 1024
+HEAD_CACHE_MAXAGE = "SET-OR-DELETE-BEFORE-DEPLOY"          # default 60
+PROOF_CACHE_MAXAGE = "SET-OR-DELETE-BEFORE-DEPLOY"         # default 172800
+AVL_PROOF_CACHE_MAXAGE = "SET-OR-DELETE-BEFORE-DEPLOY"     # default 172800
+ETH_PROOF_CACHE_MAXAGE = "SET-OR-DELETE-BEFORE-DEPLOY"     # default 172800
+SLOT_MAPPING_CACHE_MAXAGE = "SET-OR-DELETE-BEFORE-DEPLOY"  # default 172800
+TRANSACTIONS_CACHE_MAXAGE = "SET-OR-DELETE-BEFORE-DEPLOY"  # default 60
+
+# zkSync Era gateway chains 123 and 32657 are served by turing but not here.
+# To add one: CHAIN_<id>_RPC_URL plus CHAIN_<id>_CONTRACT_ADDRESS.
