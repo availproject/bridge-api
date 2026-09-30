@@ -65,6 +65,9 @@ AVL_HEAD_CACHE_MAXAGE = "60"
 ETH_PROOF_FAILURE_CACHE_MAXAGE = "600"
 HELIOS_UPDATE_FREQUENCY = "3600"
 VECTOR_UPDATE_FREQUENCY = "360"
+TRANSACTIONS_RESULT_MAX_SIZE = "250"
+EXPECTED_AVAIL_HEAD_UPDATE = "900"
+EXPECTED_ETH_HEAD_UPDATE = "900"
 
 # --- optionals with code defaults ---
 # Each is read as .ok().and_then(parse).unwrap_or(default), so a leftover placeholder
