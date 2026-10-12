@@ -1073,20 +1073,19 @@ async fn track_slot_avail_task(state: Arc<AppState>) -> Result<()> {
                     .json::<Root>()
                     .await
                     .context("Cannot decode beacon response")?;
-                let bl = root
-                    .data
-                    .message
-                    .body
-                    .execution_payload
-                    .block_number
-                    .parse()?;
-                let hash = root
-                    .data
-                    .message
-                    .body
-                    .execution_payload
-                    .block_hash
-                    .parse()?;
+                let (bl, hash) = match root.data.message.body.execution_block()? {
+                    ExecutionBlock::Known { number, hash } => (number, hash),
+                    ExecutionBlock::ByHash(hash) => {
+                        let header: Option<HeaderBlockNumber> = state
+                            .ethereum_client
+                            .request("eth_getBlockByHash", rpc_params![hash, false])
+                            .await
+                            .context("Cannot get execution block")?;
+                        let header =
+                            header.with_context(|| format!("Execution block {hash} not found"))?;
+                        (header.number as u64, hash)
+                    }
+                };
                 let mut slot_block_head = SLOT_BLOCK_HEAD.write().await;
                 tracing::info!("Beacon mapping: {slot}:{bl}");
                 *slot_block_head = Some((slot, bl, hash, timestamp));
@@ -1144,4 +1143,40 @@ fn test_remaining_time_for_helios_update() {
     let update = Utc::now().timestamp() - 1200;
     let remaining = time_until_next_helios_update(update as u64, 3600);
     assert_eq!(2400, remaining.as_secs());
+}
+
+#[test]
+fn test_pre_gloas_beacon_block_maps_to_execution_payload() {
+    // Sepolia slot 11296672 (Fulu), trimmed to the fields the task reads.
+    let root: Root = serde_json::from_str(
+        r#"{"version":"fulu","data":{"message":{"slot":"11296672","body":{"execution_payload":{"block_number":"11856241","block_hash":"0x2963a21ef9ad725acdf867b6f04f1e2f6635c4ebecc36c72f15f1ea631ce97ca"}}}}}"#,
+    )
+    .unwrap();
+    assert_eq!(
+        root.data.message.body.execution_block().unwrap(),
+        ExecutionBlock::Known {
+            number: 11856241,
+            hash: "0x2963a21ef9ad725acdf867b6f04f1e2f6635c4ebecc36c72f15f1ea631ce97ca"
+                .parse()
+                .unwrap(),
+        }
+    );
+}
+
+#[test]
+fn test_gloas_beacon_block_maps_to_bid_parent_block() {
+    // Sepolia slot 11337920 (Gloas), trimmed to the fields the task reads. Avail stored the state
+    // root of block 11897272 for this slot, which is the bid's parent block, not its own block.
+    let root: Root = serde_json::from_str(
+        r#"{"version":"gloas","data":{"message":{"slot":"11337920","body":{"signed_execution_payload_bid":{"message":{"parent_block_hash":"0x2929e926e84142c0744f26dca3a1d5344a5c1b6e41e9628eb15eb70839d13af8","block_hash":"0x7a484bf89906cd90e43b7fd8416abd5101247835a29dd545848e14e549dec534"}}}}}}"#,
+    )
+    .unwrap();
+    assert_eq!(
+        root.data.message.body.execution_block().unwrap(),
+        ExecutionBlock::ByHash(
+            "0x2929e926e84142c0744f26dca3a1d5344a5c1b6e41e9628eb15eb70839d13af8"
+                .parse()
+                .unwrap()
+        )
+    );
 }
