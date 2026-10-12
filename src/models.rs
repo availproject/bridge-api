@@ -37,13 +37,54 @@ pub struct Message {
 
 #[derive(Debug, Deserialize)]
 pub struct MessageBody {
-    pub execution_payload: ExecutionPayload,
+    /// Present before the Gloas fork.
+    pub execution_payload: Option<ExecutionPayload>,
+    /// Present from the Gloas fork, which replaced the payload with a builder's bid.
+    pub signed_execution_payload_bid: Option<SignedExecutionPayloadBid>,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct ExecutionPayload {
     pub block_number: String,
     pub block_hash: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SignedExecutionPayloadBid {
+    pub message: ExecutionPayloadBid,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ExecutionPayloadBid {
+    pub parent_block_hash: B256,
+}
+
+/// The execution block whose state root the light client stores for a beacon slot.
+#[derive(Debug, PartialEq)]
+pub enum ExecutionBlock {
+    Known {
+        number: u64,
+        hash: B256,
+    },
+    /// From Gloas the beacon block names the block only by hash, so its number must be looked up.
+    ByHash(B256),
+}
+
+impl MessageBody {
+    pub fn execution_block(&self) -> anyhow::Result<ExecutionBlock> {
+        match (&self.execution_payload, &self.signed_execution_payload_bid) {
+            (Some(payload), _) => Ok(ExecutionBlock::Known {
+                number: payload.block_number.parse()?,
+                hash: payload.block_hash.parse()?,
+            }),
+            // From Gloas the light client stores the state root of the bid's parent block, not of
+            // the bid's own block (checked against Vector ExecutionStateRoots on Turing and Hex).
+            (None, Some(bid)) => Ok(ExecutionBlock::ByHash(bid.message.parent_block_hash)),
+            (None, None) => Err(anyhow::anyhow!(
+                "beacon block has neither an execution payload nor a payload bid"
+            )),
+        }
+    }
 }
 
 pub struct ErrorResponse {
