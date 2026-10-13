@@ -25,8 +25,9 @@ memory_limit = "1Gi"
 # be written before the app is unparked, or vals fails at helmfile apply:
 #   ssh porto secret:k8s:write bridge/testnet/bridge-api KEY=value
 [secrets]
-ETHEREUM_CLIENT_URL = "/bridge/testnet/bridge-api/ETHEREUM_CLIENT_URL"
-BEACONCHAIN_URL = "/bridge/testnet/bridge-api/BEACONCHAIN_URL"
+ETHEREUM_CLIENT_URL = "/bridge/testnet/shared/SEPOLIA_RPC_URL"
+CHAIN_11155111_RPC_URL = "/bridge/testnet/shared/SEPOLIA_RPC_URL"
+BEACONCHAIN_URL = "/bridge/testnet/shared/SEPOLIA_BEACON_URL"
 DATABASE_URL = "/bridge/testnet/bridge-api/DATABASE_URL"
 
 [env]
@@ -49,13 +50,6 @@ AVAIL_CLIENT_URL = "SET-BEFORE-DEPLOY"
 BRIDGE_CONTRACT_ADDRESS = "SET-BEFORE-DEPLOY"
 VECTORX_CONTRACT_ADDRESS = "SET-BEFORE-DEPLOY"
 CHAIN_11155111_CONTRACT_ADDRESS = "SET-BEFORE-DEPLOY"
-
-# Sepolia RPC. Was a free public node (ethereum-sepolia-rpc.publicnode.com); turing
-# keeps the equivalent private via SSM because the proof endpoints hit Sepolia hard
-# enough to get rate-limited. On turing this is the SAME value as ETHEREUM_CLIENT_URL.
-# Once a private endpoint exists, move this line to [secrets] rather than
-# putting a public URL back.
-CHAIN_11155111_RPC_URL = "SET-BEFORE-DEPLOY"
 
 # --- decided ---
 CONTRACT_CHAIN_ID = "11155111"
