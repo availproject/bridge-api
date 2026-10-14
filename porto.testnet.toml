@@ -45,20 +45,20 @@ PORT = "8080"
 #                                    chains map with no log line and no error
 # On turing, CHAIN_11155111_CONTRACT_ADDRESS equals VECTORX_CONTRACT_ADDRESS
 # (0xe542dB219a7e2b29C7AEaEAce242c9a2Cd528F96). Confirm that still holds here.
-AVAIL_CHAIN_NAME = "SET-BEFORE-DEPLOY"
+AVAIL_CHAIN_NAME = "avail_infinity_turing"
 AVAIL_CLIENT_URL = "https://infinity-turing-rpc.avail.so/rpc"
-BRIDGE_CONTRACT_ADDRESS = "SET-BEFORE-DEPLOY"
-VECTORX_CONTRACT_ADDRESS = "SET-BEFORE-DEPLOY"
-CHAIN_11155111_CONTRACT_ADDRESS = "SET-BEFORE-DEPLOY"
+BRIDGE_CONTRACT_ADDRESS = "0x6E4bB3f3637e49A091D75A600849c02e3AA8f057"
+VECTORX_CONTRACT_ADDRESS = "0x3920DE8e8249E9BD931381BBe521487a128766e7"
+CHAIN_11155111_CONTRACT_ADDRESS = "0x3920DE8e8249E9BD931381BBe521487a128766e7"
 
 # --- decided ---
 CONTRACT_CHAIN_ID = "11155111"
-MERKLE_PROOF_SERVICE_URL = "http://bridge-testnet-merkle-proof-service.bridge-testnet.svc.cluster.local:3000/api"
+MERKLE_PROOF_SERVICE_URL = "https://merkle-proof-service-testnet.bridge.avail.tools/api"
 ETH_HEAD_CACHE_MAXAGE = "30"
 AVL_HEAD_CACHE_MAXAGE = "60"
 ETH_PROOF_FAILURE_CACHE_MAXAGE = "600"
 HELIOS_UPDATE_FREQUENCY = "3600"
-VECTOR_UPDATE_FREQUENCY = "360"
+VECTOR_UPDATE_FREQUENCY = "1200"
 TRANSACTIONS_RESULT_MAX_SIZE = "250"
 EXPECTED_AVAIL_HEAD_UPDATE = "900"
 EXPECTED_ETH_HEAD_UPDATE = "900"
@@ -67,13 +67,6 @@ EXPECTED_ETH_HEAD_UPDATE = "900"
 # Each is read as .ok().and_then(parse).unwrap_or(default), so a leftover placeholder
 # yields the default SILENTLY — it does not fail. Turing sets none of them, so
 # deleting these lines on deploy day reproduces turing behaviour exactly.
-MAX_CONCURRENT_REQUEST = "SET-OR-DELETE-BEFORE-DEPLOY"     # default 1024
-HEAD_CACHE_MAXAGE = "SET-OR-DELETE-BEFORE-DEPLOY"          # default 60
-PROOF_CACHE_MAXAGE = "SET-OR-DELETE-BEFORE-DEPLOY"         # default 172800
-AVL_PROOF_CACHE_MAXAGE = "SET-OR-DELETE-BEFORE-DEPLOY"     # default 172800
-ETH_PROOF_CACHE_MAXAGE = "SET-OR-DELETE-BEFORE-DEPLOY"     # default 172800
-SLOT_MAPPING_CACHE_MAXAGE = "SET-OR-DELETE-BEFORE-DEPLOY"  # default 172800
-TRANSACTIONS_CACHE_MAXAGE = "SET-OR-DELETE-BEFORE-DEPLOY"  # default 60
 
 # zkSync Era gateway chains 123 and 32657 are served by turing but not here.
 # To add one: CHAIN_<id>_RPC_URL plus CHAIN_<id>_CONTRACT_ADDRESS.
