@@ -1,6 +1,6 @@
 # Bridge API
 
-The bridge API is a REST API for fetching proofs from Avail's Kate RPC and Merkle proof service API to submit on Ethereum or
+The bridge API is a REST API for fetching proofs from Avail's Bridge RPC and Merkle proof service API to submit on Ethereum or
 any off-chain proof verification.
 
 ## Deploying the bridge API
@@ -293,7 +293,7 @@ RUSTFLAGS="-C target-cpu=native" cargo run --profile maxperf
               "0xf871a08eccb5e838d7d0699e06d85c472bb097d8012c44d790e5d15c5b8465c7abb88180a02581c4c4535083ecd9ea1a314216bbe948f27bccb2e997c7796a9eec8f4c3df0a0c453ceda114a9775f135a7a2687f75e753c6f814789528fb73bb8cb5dec7eac680808080808080808080808080",
               "0xf8429f31265685397ec9fa17535b5603e86e2b01a583b71373e1b2cbfac2a5bff58fa1a0eb70a047920b4aa1f3a418b52e455694d4e1a2362fd7fbcf16fe53d798311beb"
            ]
-        }   
+        }
      ```
 
 ### Get bridge transactions
@@ -360,6 +360,6 @@ RUSTFLAGS="-C target-cpu=native" cargo run --profile maxperf
       }
       ```
 
-### Examples of using bridge api 
+### Examples of using bridge api
 
 *  We have prepared a set of examples written in Rust and Typescript to help you understand how to use bridge api. You can explore these examples by visiting our [code examples repository](https://github.com/availproject/avail-bridge-examples).

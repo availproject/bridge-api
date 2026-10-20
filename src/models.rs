@@ -179,7 +179,7 @@ pub struct ProofQueryStruct {
 
 #[derive(Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct KateQueryDataProofResponse {
+pub struct BridgeQueryDataProofResponse {
     pub data_proof: DataProof,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub message: Option<AddressedMessage>,
@@ -250,7 +250,7 @@ pub struct AggregatedResponse {
 impl AggregatedResponse {
     pub fn new(
         range_data: MerkleProofData,
-        data_proof_res: KateQueryDataProofResponse,
+        data_proof_res: BridgeQueryDataProofResponse,
         hash: B256,
     ) -> Self {
         AggregatedResponse {
