@@ -190,14 +190,12 @@ async fn transactions(
 
         let range_blocks = fetch_range_blocks(&state).await?;
 
-        let header: Value = state
+        let header: HeaderBlockNumber = state
             .avail_client
             .request("chain_getHeader", rpc_params![])
             .await
-            .context("get header")
-            .unwrap_or(json!({}));
-        let number_hex = header["number"].as_str().unwrap();
-        let latest_block_number = u32::from_str_radix(&number_hex[2..], 16).unwrap_or(0);
+            .context("get header")?;
+        let latest_block_number = header.number;
 
         let claim_estimate = time_until_next_vector_update(
             latest_block_number,
@@ -527,7 +525,7 @@ async fn get_eth_head(
             block_number: *block,
             block_hash: *hash,
             timestamp: *timestamp,
-            timestamp_diff: now - *timestamp
+            timestamp_diff: now.saturating_sub(*timestamp)
         })),
     )
         .into_response())
@@ -1122,9 +1120,9 @@ fn time_until_next_vector_update(
     Duration::from_secs((blocks_remaining * block_time_seconds) as u64)
 }
 
-fn time_until_next_helios_update(timestamp_ms: u64, helios_update_frequency: u32) -> Duration {
+fn time_until_next_helios_update(timestamp: u64, helios_update_frequency: u32) -> Duration {
     let now = Utc::now().timestamp() as u64;
-    let time_since_update = now - timestamp_ms;
+    let time_since_update = now.saturating_sub(timestamp);
     let update_frequency = Duration::from_secs(helios_update_frequency as u64).as_secs();
     let remaining = update_frequency.saturating_sub(time_since_update);
     Duration::from_secs(remaining)
@@ -1143,6 +1141,14 @@ fn test_remaining_time_for_helios_update() {
     let update = Utc::now().timestamp() - 1200;
     let remaining = time_until_next_helios_update(update as u64, 3600);
     assert_eq!(2400, remaining.as_secs());
+}
+
+#[test]
+fn test_remaining_time_for_helios_update_with_timestamp_ahead_of_clock() {
+    // The Avail block time can be ahead of this server's clock.
+    let update = Utc::now().timestamp() + 60;
+    let remaining = time_until_next_helios_update(update as u64, 3600);
+    assert_eq!(3600, remaining.as_secs());
 }
 
 #[test]
@@ -1179,4 +1185,45 @@ fn test_gloas_beacon_block_maps_to_bid_parent_block() {
                 .unwrap()
         )
     );
+}
+
+#[cfg(test)]
+fn test_state() -> Arc<AppState> {
+    // Nothing listens here: the tests that use this state make no requests.
+    let unused_url = "http://127.0.0.1:1";
+    Arc::new(AppState {
+        avail_client: HttpClientBuilder::default().build(unused_url).unwrap(),
+        ethereum_client: HttpClientBuilder::default().build(unused_url).unwrap(),
+        request_client: Client::new(),
+        merkle_proof_service_base_url: unused_url.to_owned(),
+        beaconchain_base_url: unused_url.to_owned(),
+        avail_chain_name: "turing".to_owned(),
+        contract_chain_id: "11155111".to_owned(),
+        contract_address: "0xe542dB219a7e2b29C7AEaEAce242c9a2Cd528F96".to_owned(),
+        bridge_contract_address: "0x967F7DdC4ec508462231849AE81eeaa68Ad01389".to_owned(),
+        eth_head_cache_maxage: 240,
+        avl_head_cache_maxage: 600,
+        head_cache_maxage: 60,
+        avl_proof_cache_maxage: 172800,
+        eth_proof_cache_maxage: 172800,
+        proof_cache_maxage: 172800,
+        eth_proof_failure_cache_maxage: 5400,
+        slot_mapping_cache_maxage: 172800,
+        transactions_cache_maxage: 60,
+        db: PgPool::connect_lazy("postgresql://avail:avail@localhost:5432/ui-indexer").unwrap(),
+        chains: HashMap::new(),
+        helios_update_frequency: 3600,
+        vector_update_frequency: 360,
+    })
+}
+
+#[tokio::test]
+async fn test_eth_head_with_timestamp_ahead_of_clock() {
+    let timestamp = Utc::now().timestamp() as u64 + 60;
+    *SLOT_BLOCK_HEAD.write().await = Some((1, 1, B256::ZERO, timestamp));
+
+    let response = get_eth_head(State(test_state())).await.into_response();
+    let body = to_bytes(response.into_body(), 2048).await.unwrap();
+    let body: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(body["timestampDiff"], 0);
 }
