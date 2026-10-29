@@ -2,7 +2,8 @@ mod models;
 use crate::models::*;
 
 use alloy::primitives::{Address, B256, U256, hex};
-use alloy::providers::ProviderBuilder;
+use alloy::providers::{ProviderBuilder, RootProvider};
+use alloy::transports::http::reqwest::Url;
 use anyhow::{Context, Result, anyhow};
 use axum::body::{Body, to_bytes};
 use axum::response::Response;
@@ -45,7 +46,8 @@ use tower_http::{
     cors::{Any, CorsLayer},
     trace::TraceLayer,
 };
-use tracing::{info, warn};
+use tracing::{Level, Subscriber, info, warn};
+use tracing_subscriber::filter::FilterFn;
 use tracing_subscriber::prelude::*;
 
 sol! {
@@ -215,7 +217,7 @@ async fn transactions(
             let mut estimate = None;
 
             if tx.final_status == BridgeStatusEnum::InProgress
-                && tx.source_block_height < range_blocks.data.end as i32
+                && tx.source_block_height <= range_blocks.data.end as i32
             {
                 tx.final_status = BridgeStatusEnum::ClaimReady;
             }
@@ -272,7 +274,8 @@ async fn fetch_range_blocks(
         .get(block_range_url)
         .send()
         .await
-        .map_err(|e| {
+        .map_err(|_| {
+            let e = UpstreamError::MerkleProofService;
             tracing::error!("Cannot parse range blocks: {e:#}");
             ErrorResponse::with_status_and_headers(
                 anyhow!("{e:#}"),
@@ -284,7 +287,8 @@ async fn fetch_range_blocks(
     let range_blocks = response
         .json::<RangeBlocksAPIResponse>()
         .await
-        .map_err(|e| {
+        .map_err(|_| {
+            let e = UpstreamError::MerkleProofService;
             tracing::error!("Cannot parse range blocks: {e:#}");
             ErrorResponse::with_status_and_headers(
                 anyhow!("{e:#}"),
@@ -359,7 +363,8 @@ async fn get_eth_proof(
                 &[("Cache-Control", "public, max-age=60, must-revalidate")],
             )
         })?
-        .map_err(|e| {
+        .map_err(|_| {
+            let e = UpstreamError::MerkleProofService;
             tracing::error!("❌ Merkle proof api response was unsuccessful. Error: {e:#}");
             ErrorResponse::with_status_and_headers(
                 anyhow::anyhow!("Something went wrong."),
@@ -462,7 +467,7 @@ async fn get_avl_proof(
             ],
         )
         .await;
-    let mut resp = proof.map_err(|e| {
+    let resp = proof.map_err(|e| {
         tracing::error!("❌ Cannot get account and storage proofs: {e:#}");
         if e.to_string().ends_with("status code: 429") {
             ErrorResponse::with_status_and_headers(
@@ -478,6 +483,15 @@ async fn get_avl_proof(
             )
         }
     })?;
+    // eth_getProof can answer without a storage proof.
+    let Some(storage_proof) = resp.storage_proof.into_iter().next() else {
+        tracing::error!("❌ Cannot get account and storage proofs: empty storage proof");
+        return Err(ErrorResponse::with_status_and_headers(
+            anyhow!("Empty storage proof"),
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &[("Cache-Control", "public, max-age=60, must-revalidate")],
+        ));
+    };
 
     Ok((
         StatusCode::OK,
@@ -490,7 +504,7 @@ async fn get_avl_proof(
         )],
         Json(json!(EthProofResponse {
             account_proof: resp.account_proof,
-            storage_proof: resp.storage_proof.swap_remove(0).proof,
+            storage_proof: storage_proof.proof,
         })),
     )
         .into_response())
@@ -543,7 +557,8 @@ async fn get_avl_head(
         state.contract_chain_id,
         state.contract_address
     );
-    let response = state.request_client.get(url).send().await.map_err(|e| {
+    let response = state.request_client.get(url).send().await.map_err(|_| {
+        let e = UpstreamError::MerkleProofService;
         tracing::error!("❌ Cannot parse range blocks: {e:#}");
         ErrorResponse::with_status_and_headers(
             anyhow!("{e:#}"),
@@ -555,7 +570,8 @@ async fn get_avl_head(
     let range_blocks = response
         .json::<RangeBlocksAPIResponse>()
         .await
-        .map_err(|e| {
+        .map_err(|_| {
+            let e = UpstreamError::MerkleProofService;
             tracing::error!("❌ Cannot parse range blocks: {e:#}");
             ErrorResponse::with_status_and_headers(
                 anyhow!("{e:#}"),
@@ -591,19 +607,9 @@ async fn get_head(
         )
     })?;
 
-    let provider = ProviderBuilder::new()
-        .connect(&chain.rpc_url)
-        .await
-        .map_err(|e| {
-            tracing::error!("❌ Cannot connect to provider: {:?}", e);
-            ErrorResponse::with_status_and_headers(
-                anyhow!("{e:#}"),
-                StatusCode::INTERNAL_SERVER_ERROR,
-                &[("Cache-Control", "public, max-age=60, must-revalidate")],
-            )
-        })?;
-    let contract = SP1Vector::new(chain.contract_address, provider);
-    let head = contract.latestBlock().call().await.map_err(|e| {
+    let contract = SP1Vector::new(chain.contract_address, chain.provider.clone());
+    let head = contract.latestBlock().call().await.map_err(|_| {
+        let e = UpstreamError::Rpc;
         tracing::error!("❌ Cannot get latest block from contract: {:?}", e);
         ErrorResponse::with_status_and_headers(
             anyhow!("{e:#}"),
@@ -736,7 +742,8 @@ async fn get_proof(
                 &[("Cache-Control", "public, max-age=60, immutable")],
             ));
         }
-        Err(err) => {
+        Err(_) => {
+            let err = UpstreamError::MerkleProofService;
             tracing::error!("Cannot get merkle proof api response {:?}", err);
             return Err(ErrorResponse::with_status_and_headers(
                 anyhow!("error: {err}"),
@@ -824,14 +831,11 @@ async fn fetch_chain_head(state: Arc<AppState>, chain_id: u64) -> Result<u32> {
 #[tokio::main]
 async fn main() {
     dotenvy::dotenv().ok();
-    tracing_subscriber::registry()
-        .with(tracing_subscriber::fmt::layer().json())
-        .with(
-            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
-                "bridge_api=debug,tower_http=debug,axum::rejection=trace".into()
-            }),
-        )
-        .init();
+    subscriber(
+        tracing_subscriber::EnvFilter::try_from_default_env()
+            .unwrap_or_else(|_| "bridge_api=debug,tower_http=debug,axum::rejection=trace".into()),
+    )
+    .init();
 
     let max_concurrent_request: usize = env::var("MAX_CONCURRENT_REQUEST")
         .ok()
@@ -859,13 +863,17 @@ async fn main() {
         .iter()
         .filter_map(|&chain_id| {
             let rpc_url = env::var(format!("CHAIN_{}_RPC_URL", chain_id)).ok()?;
+            let Some(rpc_url) = parse_rpc_url(&rpc_url) else {
+                warn!("CHAIN_{chain_id}_RPC_URL is not a valid URL, skipping chain");
+                return None;
+            };
             let contract_address = env::var(format!("CHAIN_{}_CONTRACT_ADDRESS", chain_id))
                 .ok()
                 .and_then(|addr| addr.parse::<Address>().ok())?;
             Some((
                 chain_id,
                 Chain {
-                    rpc_url,
+                    provider: chain_provider(rpc_url),
                     contract_address,
                 },
             ))
@@ -887,7 +895,12 @@ async fn main() {
                     .unwrap_or("https://ethereum-sepolia.publicnode.com".to_owned()),
             )
             .unwrap(),
-        request_client: Client::builder().brotli(true).build().unwrap(),
+        request_client: Client::builder()
+            .brotli(true)
+            .connect_timeout(Duration::from_secs(10))
+            .timeout(Duration::from_secs(60))
+            .build()
+            .unwrap(),
         merkle_proof_service_base_url: env::var("MERKLE_PROOF_SERVICE_URL")
             .unwrap_or("https://beaconapi.succinct.xyz/api/integrations/vectorx".to_owned()),
         beaconchain_base_url: env::var("BEACONCHAIN_URL")
@@ -989,6 +1002,44 @@ async fn main() {
     axum::serve(listener, app).await.unwrap();
 }
 
+/// Structured JSON logs, filtered by `env_filter`.
+fn subscriber(env_filter: tracing_subscriber::EnvFilter) -> impl Subscriber + Send + Sync {
+    tracing_subscriber::registry()
+        .with(tracing_subscriber::fmt::layer().json())
+        .with(env_filter)
+        .with(limit_transport_logging())
+}
+
+/// Limit alloy HTTP transport logging to `info`, whatever `RUST_LOG` enables.
+fn limit_transport_logging() -> FilterFn {
+    FilterFn::new(|metadata| {
+        !(metadata.target().starts_with("alloy_transport_http") && *metadata.level() > Level::INFO)
+    })
+}
+
+/// Parses an RPC URL the way alloy's `ProviderBuilder::connect` did: `localhost:<port>` and
+/// `<ip>:<port>` without a scheme mean plain HTTP.
+fn parse_rpc_url(rpc_url: &str) -> Option<Url> {
+    if rpc_url.starts_with("localhost:") || rpc_url.parse::<std::net::SocketAddr>().is_ok() {
+        format!("http://{rpc_url}").parse().ok()
+    } else {
+        rpc_url.parse().ok()
+    }
+}
+
+/// One provider per chain, built once, with timeouts so a stalled RPC cannot hold a request.
+fn chain_provider(rpc_url: Url) -> RootProvider {
+    ProviderBuilder::new()
+        .disable_recommended_fillers()
+        .with_reqwest(rpc_url, |builder| {
+            builder
+                .connect_timeout(Duration::from_secs(10))
+                .timeout(Duration::from_secs(30))
+                .build()
+                .unwrap()
+        })
+}
+
 lazy_static! {
     static ref SLOT_BLOCK_HEAD: RwLock<Option<(u64, u64, B256, u64)>> = RwLock::new(None);
 }
@@ -1061,12 +1112,16 @@ async fn track_slot_avail_task(state: Arc<AppState>) -> Result<()> {
 
                 drop(slot_block_head);
 
-                let response = reqwest::get(format!(
-                    "{}/eth/v2/beacon/blocks/{}",
-                    state.beaconchain_base_url, slot
-                ))
-                .await
-                .context("Cannot get beacon block")?;
+                let response = state
+                    .request_client
+                    .get(format!(
+                        "{}/eth/v2/beacon/blocks/{}",
+                        state.beaconchain_base_url, slot
+                    ))
+                    .send()
+                    .await
+                    .map_err(|_| UpstreamError::Beacon)
+                    .context("Cannot get beacon block")?;
                 let root = response
                     .json::<Root>()
                     .await
@@ -1189,7 +1244,7 @@ fn test_gloas_beacon_block_maps_to_bid_parent_block() {
 
 #[cfg(test)]
 fn test_state() -> Arc<AppState> {
-    // Nothing listens here: the tests that use this state make no requests.
+    // Nothing listens here, so every request fails at connect.
     let unused_url = "http://127.0.0.1:1";
     Arc::new(AppState {
         avail_client: HttpClientBuilder::default().build(unused_url).unwrap(),
@@ -1211,10 +1266,73 @@ fn test_state() -> Arc<AppState> {
         slot_mapping_cache_maxage: 172800,
         transactions_cache_maxage: 60,
         db: PgPool::connect_lazy("postgresql://avail:avail@localhost:5432/ui-indexer").unwrap(),
-        chains: HashMap::new(),
+        chains: HashMap::from([(
+            1,
+            Chain {
+                provider: chain_provider(unused_url.parse().unwrap()),
+                contract_address: Address::ZERO,
+            },
+        )]),
         helios_update_frequency: 3600,
         vector_update_frequency: 360,
     })
+}
+
+#[cfg(test)]
+async fn error_body(response: Response) -> (StatusCode, String) {
+    let status = response.status();
+    let body = to_bytes(response.into_body(), 2048).await.unwrap();
+    (status, String::from_utf8(body.to_vec()).unwrap())
+}
+
+#[tokio::test]
+async fn test_head_error_when_rpc_is_unreachable() {
+    let response = get_head(Path(1), State(test_state())).await.into_response();
+    let (status, body) = error_body(response).await;
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+    assert_eq!(body, r#"{"error":"chain RPC request failed"}"#);
+}
+
+#[tokio::test]
+async fn test_avl_head_error_when_merkle_proof_service_is_unreachable() {
+    let response = get_avl_head(State(test_state())).await.into_response();
+    let (status, body) = error_body(response).await;
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+    assert_eq!(body, r#"{"error":"merkle proof service request failed"}"#);
+}
+
+#[test]
+fn test_rpc_url_without_scheme_means_http() {
+    let parsed = |s| parse_rpc_url(s).map(|url| url.to_string());
+    assert_eq!(parsed("localhost:8545").unwrap(), "http://localhost:8545/");
+    assert_eq!(parsed("127.0.0.1:8545").unwrap(), "http://127.0.0.1:8545/");
+    assert_eq!(
+        parsed("https://rpc.example/path").unwrap(),
+        "https://rpc.example/path"
+    );
+    assert_eq!(parsed("not a url"), None);
+}
+
+#[test]
+fn test_alloy_http_logging_is_limited_to_info() {
+    // Same target and field as the span that alloy's HTTP transport opens for each request.
+    for directives in [
+        "debug",
+        "alloy_transport_http=trace",
+        "info,alloy_transport_http=trace",
+    ] {
+        tracing::subscriber::with_default(
+            subscriber(tracing_subscriber::EnvFilter::new(directives)),
+            || {
+                let span = tracing::debug_span!(
+                    target: "alloy_transport_http::reqwest_transport",
+                    "ReqwestTransport",
+                    url = "http://rpc.example/path"
+                );
+                assert!(span.is_disabled(), "{directives}");
+            },
+        );
+    }
 }
 
 #[tokio::test]

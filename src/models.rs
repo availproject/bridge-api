@@ -1,4 +1,5 @@
 use alloy::primitives::{Address, B256};
+use alloy::providers::RootProvider;
 use alloy::sol;
 use avail_core::data_proof::AddressedMessage;
 use axum::Json;
@@ -162,9 +163,35 @@ where
 
 #[derive(Debug)]
 pub struct Chain {
-    pub rpc_url: String,
+    pub provider: RootProvider,
     pub contract_address: Address,
 }
+
+/// Fixed-text error for failed upstream requests.
+pub enum UpstreamError {
+    Rpc,
+    Beacon,
+    MerkleProofService,
+}
+
+impl std::fmt::Display for UpstreamError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            UpstreamError::Rpc => "chain RPC request failed",
+            UpstreamError::Beacon => "beacon request failed",
+            UpstreamError::MerkleProofService => "merkle proof service request failed",
+        })
+    }
+}
+
+// Debug prints the same fixed text, so log lines that use {:?} read the same.
+impl std::fmt::Debug for UpstreamError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(self, f)
+    }
+}
+
+impl std::error::Error for UpstreamError {}
 
 #[derive(Deserialize)]
 pub struct IndexStruct {
