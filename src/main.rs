@@ -190,41 +190,51 @@ async fn transactions(
         .fetch_all(&state.db)
         .await?;
 
-        let range_blocks = fetch_range_blocks(&state).await?;
+        // If the range or the header request fails, the rows keep their DB status and get no estimate.
+        let range_end = fetch_range_blocks(&state)
+            .await
+            .ok()
+            .map(|range_blocks| range_blocks.data.end);
 
-        let header: HeaderBlockNumber = state
+        let header: Result<HeaderBlockNumber, ClientError> = state
             .avail_client
             .request("chain_getHeader", rpc_params![])
-            .await
-            .context("get header")?;
-        let latest_block_number = header.number;
+            .await;
+        let latest_block_number = header
+            .inspect_err(|e| tracing::error!("❌ Cannot get Avail header: {e:#}"))
+            .ok()
+            .map(|header| header.number);
 
-        let claim_estimate = time_until_next_vector_update(
-            latest_block_number,
-            range_blocks.data.end,
-            state.vector_update_frequency,
-            20,
-        );
-
-        tracing::info!(
-            latest_block_number = latest_block_number,
-            range_end = range_blocks.data.end,
-            blocks_since = latest_block_number.saturating_sub(range_blocks.data.end),
-            "time_until_next_vector_update"
-        );
+        let claim_estimate = match (range_end, latest_block_number) {
+            (Some(range_end), Some(latest_block_number)) => {
+                tracing::info!(
+                    latest_block_number = latest_block_number,
+                    range_end = range_end,
+                    blocks_since = latest_block_number.saturating_sub(range_end),
+                    "time_until_next_vector_update"
+                );
+                Some(time_until_next_vector_update(
+                    latest_block_number,
+                    range_end,
+                    state.vector_update_frequency,
+                    20,
+                ))
+            }
+            _ => None,
+        };
 
         for mut tx in transactions {
             let mut estimate = None;
 
             if tx.final_status == BridgeStatusEnum::InProgress
-                && tx.source_block_height <= range_blocks.data.end as i32
+                && range_end.is_some_and(|range_end| tx.source_block_height <= range_end as i32)
             {
                 tx.final_status = BridgeStatusEnum::ClaimReady;
             }
             if tx.final_status == BridgeStatusEnum::Initiated
                 || tx.final_status == BridgeStatusEnum::InProgress
             {
-                estimate = Some(claim_estimate.as_secs());
+                estimate = claim_estimate.map(|claim_estimate| claim_estimate.as_secs());
             }
 
             transaction_data_results.push(TransactionData::new(
@@ -1209,7 +1219,8 @@ fn test_remaining_time_for_vector_update() {
 fn test_remaining_time_for_helios_update() {
     let update = Utc::now().timestamp() - 1200;
     let remaining = time_until_next_helios_update(update as u64, 3600);
-    assert_eq!(2400, remaining.as_secs());
+    // The clock can tick between the two reads.
+    assert!((2399..=2400).contains(&remaining.as_secs()));
 }
 
 #[test]
