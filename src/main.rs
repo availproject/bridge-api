@@ -24,7 +24,7 @@ use http::Method;
 use jsonrpsee::{
     core::ClientError,
     core::client::ClientT,
-    http_client::{HttpClient, HttpClientBuilder},
+    http_client::{HttpClient, HttpClientBuilder, transport::Error as TransportError},
     rpc_params,
 };
 use lazy_static::lazy_static;
@@ -442,6 +442,17 @@ async fn get_eth_proof(
         .into_response())
 }
 
+/// True when the RPC server answered with HTTP 429.
+fn is_rate_limited(e: &ClientError) -> bool {
+    let ClientError::Transport(err) = e else {
+        return false;
+    };
+    matches!(
+        err.downcast_ref::<TransportError>(),
+        Some(TransportError::Rejected { status_code: 429 })
+    )
+}
+
 #[inline(always)]
 async fn get_avl_proof(
     Path((block_hash, message_id_query)): Path<(B256, U256)>,
@@ -469,7 +480,7 @@ async fn get_avl_proof(
         .await;
     let resp = proof.map_err(|e| {
         tracing::error!("❌ Cannot get account and storage proofs: {e:#}");
-        if e.to_string().ends_with("status code: 429") {
+        if is_rate_limited(&e) {
             ErrorResponse::with_status_and_headers(
                 e.into(),
                 StatusCode::TOO_MANY_REQUESTS,
@@ -1299,6 +1310,21 @@ async fn test_avl_head_error_when_merkle_proof_service_is_unreachable() {
     let (status, body) = error_body(response).await;
     assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
     assert_eq!(body, r#"{"error":"merkle proof service request failed"}"#);
+}
+
+#[tokio::test]
+async fn test_avl_proof_rate_limited_when_rpc_answers_429() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let rpc_url = format!("http://{}", listener.local_addr().unwrap());
+    let rpc = Router::new().fallback(|| async { StatusCode::TOO_MANY_REQUESTS });
+    tokio::spawn(async move { axum::serve(listener, rpc).await });
+
+    let mut state = Arc::into_inner(test_state()).unwrap();
+    state.ethereum_client = HttpClientBuilder::default().build(rpc_url).unwrap();
+    let response = get_avl_proof(Path((B256::ZERO, U256::from(1))), State(Arc::new(state)))
+        .await
+        .into_response();
+    assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
 }
 
 #[test]
