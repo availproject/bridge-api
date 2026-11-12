@@ -4,7 +4,7 @@ use crate::state::AppState;
 #[cfg(test)]
 use crate::state::test_state;
 
-use alloy::primitives::{B256, U256};
+use alloy::primitives::{Address, B256, U256};
 use anyhow::{Result, anyhow};
 use avail_core::data_proof::AddressedMessage;
 #[cfg(test)]
@@ -272,6 +272,18 @@ pub(crate) async fn get_proof(
                 StatusCode::NOT_FOUND,
             )
         })?;
+    // The head check and the merkle proof must use the same contract: the one of the requested chain.
+    let contract_address = state
+        .chains
+        .get(&chain_id)
+        .map(|chain| chain.contract_address)
+        .ok_or_else(|| {
+            ErrorResponse::with_status_and_headers(
+                anyhow!("Cannot get chain head. Cannot fetch chain head for chain {chain_id}"),
+                StatusCode::NOT_FOUND,
+                &[("Cache-Control", "public, max-age=60, immutable")],
+            )
+        })?;
     {
         let head = fetch_chain_head(state.clone(), chain_id)
             .await
@@ -303,7 +315,8 @@ pub(crate) async fn get_proof(
     }
 
     let data_proof_response_fut = spawn_kate_proof(state.clone(), index, block_hash);
-    let merkle_proof_range_fut = spawn_merkle_proof_range_fetch(state.clone(), block_hash);
+    let merkle_proof_range_fut =
+        spawn_merkle_proof_range_fetch(state.clone(), chain_id, contract_address, block_hash);
     let (data_proof, range_response) = join!(data_proof_response_fut, merkle_proof_range_fut);
 
     let data_proof_res = data_proof
@@ -409,17 +422,19 @@ fn spawn_kate_proof(
     })
 }
 
-// spawn_merkle_proof_range_fetch fetches merkle proof for a block range
+// spawn_merkle_proof_range_fetch fetches merkle proof for a block range from the given chain's contract
 fn spawn_merkle_proof_range_fetch(
     state: Arc<AppState>,
+    contract_chain_id: u64,
+    contract_address: Address,
     block_hash: B256,
 ) -> JoinHandle<Result<MekrleProofAPIResponse, reqwest::Error>> {
     let url = format!(
         "{}?chainName={}&contractChainId={}&contractAddress={}&blockHash={}",
         state.merkle_proof_service_base_url,
         state.avail_chain_name,
-        state.contract_chain_id,
-        state.contract_address,
+        contract_chain_id,
+        contract_address,
         block_hash
     );
     tokio::spawn(async move {
@@ -571,4 +586,111 @@ async fn test_avl_proof_rate_limited_when_rpc_answers_429() {
         .await
         .into_response();
     assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+}
+
+#[tokio::test]
+async fn test_proof_asks_merkle_service_for_requested_chain_contract() {
+    use crate::state::{Chain, chain_provider};
+    use alloy::primitives::Address;
+    use axum::extract::RawQuery;
+    use axum::routing::{get, post};
+    use serde_json::Value;
+    use std::collections::HashMap;
+    use std::sync::Mutex;
+
+    // One server plays the Avail RPC, the chain RPC and the merkle proof service.
+    async fn rpc(Json(request): Json<Value>) -> Json<Value> {
+        let zero = B256::ZERO;
+        let result = match request["method"].as_str().unwrap() {
+            "chain_getHeader" => json!({"number": "0x5"}),
+            // latestBlock() = 10, so block 5 is in the range.
+            "eth_call" => json!(B256::with_last_byte(10)),
+            "kate_queryDataProof" => json!({"dataProof": {
+                "roots": {"dataRoot": zero, "blobRoot": zero, "bridgeRoot": zero},
+                "proof": [],
+                "leafIndex": 0,
+                "leaf": zero,
+            }}),
+            method => panic!("unexpected RPC method {method}"),
+        };
+        Json(json!({"jsonrpc": "2.0", "id": request["id"], "result": result}))
+    }
+
+    let merkle_query = Arc::new(Mutex::new(None));
+    let recorded_query = merkle_query.clone();
+    let merkle = move |RawQuery(query): RawQuery| async move {
+        *recorded_query.lock().unwrap() = query;
+        Json(json!({"data": {
+            "rangeHash": B256::ZERO,
+            "dataCommitment": B256::ZERO,
+            "merkleBranch": [],
+            "index": 0,
+        }}))
+    };
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    let server = Router::new()
+        .route("/", post(rpc))
+        .route("/merkle", get(merkle));
+    tokio::spawn(async move { axum::serve(listener, server).await });
+
+    // The requested chain is not the default chain (11155111) and has its own contract.
+    let chain_contract = Address::repeat_byte(0x11);
+    let mut state = Arc::into_inner(test_state()).unwrap();
+    state.avail_client = HttpClientBuilder::default().build(&url).unwrap();
+    state.merkle_proof_service_base_url = format!("{url}/merkle");
+    state.chains = HashMap::from([(
+        17000,
+        Chain {
+            provider: chain_provider(url.parse().unwrap()),
+            contract_address: chain_contract,
+        },
+    )]);
+
+    let query = ProofQueryStruct {
+        index: 0,
+        block_hash: B256::ZERO,
+    };
+    let response = get_proof(Path(17000), Query(query), State(Arc::new(state)))
+        .await
+        .into_response();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let merkle_query = merkle_query.lock().unwrap().clone().unwrap();
+    assert_eq!(
+        merkle_query,
+        format!(
+            "chainName=turing&contractChainId=17000&contractAddress={chain_contract}&blockHash={}",
+            B256::ZERO
+        )
+    );
+}
+
+#[tokio::test]
+async fn test_proof_error_for_unsupported_chain() {
+    use serde_json::Value;
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    let rpc = Router::new().fallback(|Json(request): Json<Value>| async move {
+        Json(json!({"jsonrpc": "2.0", "id": request["id"], "result": {"number": "0x5"}}))
+    });
+    tokio::spawn(async move { axum::serve(listener, rpc).await });
+
+    let mut state = Arc::into_inner(test_state()).unwrap();
+    state.avail_client = HttpClientBuilder::default().build(&url).unwrap();
+    let query = ProofQueryStruct {
+        index: 0,
+        block_hash: B256::ZERO,
+    };
+    let response = get_proof(Path(5), Query(query), State(Arc::new(state)))
+        .await
+        .into_response();
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    let body = to_bytes(response.into_body(), 2048).await.unwrap();
+    assert_eq!(
+        body,
+        r#"{"error":"Cannot get chain head. Cannot fetch chain head for chain 5"}"#
+    );
 }
