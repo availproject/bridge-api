@@ -60,8 +60,10 @@ pub(crate) async fn transactions(
                 ErrorResponse::with_status(anyhow!("Not found"), StatusCode::INTERNAL_SERVER_ERROR)
             })?;
 
-        let claim_estimate =
-            time_until_next_helios_update(*helios_update_timestamp, state.helios_update_frequency);
+        let claim_estimate = time_until_next_helios_update(
+            *helios_update_timestamp,
+            state.config.helios_update_frequency,
+        );
 
         for mut tx in transactions {
             let mut estimate = None;
@@ -136,7 +138,7 @@ pub(crate) async fn transactions(
                 Some(time_until_next_vector_update(
                     latest_block_number,
                     range_end,
-                    state.vector_update_frequency,
+                    state.config.vector_update_frequency,
                     20,
                 ))
             }
@@ -201,11 +203,11 @@ async fn fetch_range_blocks(
 ) -> Result<RangeBlocksAPIResponse, UpstreamError> {
     let block_range_url = format!(
         "{}/{}?chainName={}&contractChainId={}&contractAddress={}",
-        state.merkle_proof_service_base_url,
+        state.config.merkle_proof_service_base_url,
         "range",
-        state.avail_chain_name,
-        state.contract_chain_id,
-        state.contract_address
+        state.config.avail_chain_name,
+        state.config.contract_chain_id,
+        state.config.contract_address
     );
 
     // The caller goes on without the range, so the error carries no response.

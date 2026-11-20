@@ -52,7 +52,7 @@ pub(crate) async fn get_eth_head(
             "Cache-Control",
             format!(
                 "public, max-age={}, must-revalidate",
-                state.eth_head_cache_maxage
+                state.config.eth_head_cache_maxage
             ),
         )],
         Json(json!(HeadResponseV2 {
@@ -72,10 +72,10 @@ pub(crate) async fn get_avl_head(
 ) -> Result<impl IntoResponse, ErrorResponse> {
     let url = format!(
         "{}/{}?contractChainId={}&contractAddress={}",
-        state.merkle_proof_service_base_url,
+        state.config.merkle_proof_service_base_url,
         "range",
-        state.contract_chain_id,
-        state.contract_address
+        state.config.contract_chain_id,
+        state.config.contract_address
     );
     let failed = |source: reqwest::Error| {
         let e = UpstreamError::MerkleProofService;
@@ -95,7 +95,7 @@ pub(crate) async fn get_avl_head(
             "Cache-Control",
             format!(
                 "public, max-age={}, must-revalidate",
-                state.avl_head_cache_maxage
+                state.config.avl_head_cache_maxage
             ),
         )],
         Json(json!(range_blocks)),
@@ -125,7 +125,7 @@ pub(crate) async fn get_head(
             "Cache-Control",
             format!(
                 "public, max-age={}, must-revalidate",
-                state.head_cache_maxage
+                state.config.head_cache_maxage
             ),
         )],
         Json(json!(ChainHeadResponse { head })),
@@ -244,7 +244,7 @@ async fn track_slot_pass(state: &AppState) -> Result<Duration> {
         .request_client
         .get(format!(
             "{}/eth/v2/beacon/blocks/{}",
-            state.beaconchain_base_url, slot
+            state.config.beaconchain_base_url, slot
         ))
         .send()
         .await
@@ -365,7 +365,7 @@ async fn head_task_state(beacon_url: String) -> AppState {
     let avail_url = serve(axum::Router::new().route("/", post(rpc))).await;
     let mut state = Arc::into_inner(test_state()).unwrap();
     state.avail_client = HttpClientBuilder::default().build(avail_url).unwrap();
-    state.beaconchain_base_url = beacon_url;
+    state.config.beaconchain_base_url = beacon_url;
     state
 }
 

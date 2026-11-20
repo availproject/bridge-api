@@ -39,14 +39,14 @@ pub(crate) async fn get_eth_proof(
 ) -> Result<impl IntoResponse, ErrorResponse> {
     let data_proof_response_fut = spawn_kate_proof(state.clone(), index_struct.index, block_hash);
 
-    let eth_proof_cache_maxage = state.eth_proof_cache_maxage;
-    let eth_proof_failure_cache_maxage = state.eth_proof_failure_cache_maxage;
+    let eth_proof_cache_maxage = state.config.eth_proof_cache_maxage;
+    let eth_proof_failure_cache_maxage = state.config.eth_proof_failure_cache_maxage;
     let url = format!(
         "{}?chainName={}&contractChainId={}&contractAddress={}&blockHash={}",
-        state.merkle_proof_service_base_url,
-        state.avail_chain_name,
-        state.contract_chain_id,
-        state.contract_address,
+        state.config.merkle_proof_service_base_url,
+        state.config.avail_chain_name,
+        state.config.contract_chain_id,
+        state.config.contract_address,
         block_hash
     );
 
@@ -186,7 +186,7 @@ pub(crate) async fn get_avl_proof(
         .request(
             "eth_getProof",
             rpc_params![
-                state.bridge_contract_address.as_str(),
+                state.config.bridge_contract_address.as_str(),
                 [B256::from_slice(&result[..]).to_string()],
                 block_hash
             ],
@@ -224,7 +224,7 @@ pub(crate) async fn get_avl_proof(
             "Cache-Control",
             format!(
                 "public, max-age={}, immutable",
-                state.avl_proof_cache_maxage
+                state.config.avl_proof_cache_maxage
             ),
         )],
         Json(json!(EthProofResponse {
@@ -368,7 +368,10 @@ pub(crate) async fn get_proof(
         StatusCode::OK,
         [(
             "Cache-Control",
-            format!("public, max-age={}, immutable", state.proof_cache_maxage),
+            format!(
+                "public, max-age={}, immutable",
+                state.config.proof_cache_maxage
+            ),
         )],
         Json(json!(AggregatedResponse::new(
             range_data,
@@ -402,8 +405,8 @@ fn spawn_merkle_proof_range_fetch(
 ) -> JoinHandle<Result<MerkleProofAPIResponse, reqwest::Error>> {
     let url = format!(
         "{}?chainName={}&contractChainId={}&contractAddress={}&blockHash={}",
-        state.merkle_proof_service_base_url,
-        state.avail_chain_name,
+        state.config.merkle_proof_service_base_url,
+        state.config.avail_chain_name,
         contract_chain_id,
         contract_address,
         block_hash
@@ -593,7 +596,7 @@ async fn test_proof_asks_merkle_service_for_requested_chain_contract() {
     let chain_contract = Address::repeat_byte(0x11);
     let mut state = Arc::into_inner(test_state()).unwrap();
     state.avail_client = HttpClientBuilder::default().build(&url).unwrap();
-    state.merkle_proof_service_base_url = format!("{url}/merkle");
+    state.config.merkle_proof_service_base_url = format!("{url}/merkle");
     state.chains = HashMap::from([(
         17000,
         Chain {
