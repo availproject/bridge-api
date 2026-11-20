@@ -1,16 +1,18 @@
-use crate::error::{ErrorResponse, UpstreamError};
-use crate::heads::{ChainHeadResponse, HeaderBlockNumber, get_head};
+use crate::error::{ErrorResponse, FailureKind, UpstreamError};
+use crate::heads::{HeaderBlockNumber, chain_head};
 use crate::state::AppState;
 #[cfg(test)]
 use crate::state::test_state;
+#[cfg(test)]
+use crate::test_util::{LogBuffer, rpc, serve};
 
 use alloy::primitives::{Address, B256, U256};
 use anyhow::{Result, anyhow};
 use avail_core::data_proof::AddressedMessage;
 #[cfg(test)]
 use axum::Router;
-use axum::body::{Body, to_bytes};
-use axum::response::Response;
+#[cfg(test)]
+use axum::body::to_bytes;
 use axum::{
     extract::{Json, Path, Query, State},
     http::StatusCode,
@@ -37,14 +39,14 @@ pub(crate) async fn get_eth_proof(
 ) -> Result<impl IntoResponse, ErrorResponse> {
     let data_proof_response_fut = spawn_kate_proof(state.clone(), index_struct.index, block_hash);
 
-    let eth_proof_cache_maxage = state.eth_proof_cache_maxage;
-    let eth_proof_failure_cache_maxage = state.eth_proof_failure_cache_maxage;
+    let eth_proof_cache_maxage = state.config.eth_proof_cache_maxage;
+    let eth_proof_failure_cache_maxage = state.config.eth_proof_failure_cache_maxage;
     let url = format!(
         "{}?chainName={}&contractChainId={}&contractAddress={}&blockHash={}",
-        state.merkle_proof_service_base_url,
-        state.avail_chain_name,
-        state.contract_chain_id,
-        state.contract_address,
+        state.config.merkle_proof_service_base_url,
+        state.config.avail_chain_name,
+        state.config.contract_chain_id,
+        state.config.contract_address,
         block_hash
     );
 
@@ -84,9 +86,10 @@ pub(crate) async fn get_eth_proof(
                 &[("Cache-Control", "public, max-age=60, must-revalidate")],
             )
         })?
-        .map_err(|_| {
+        .map_err(|source| {
             let e = UpstreamError::MerkleProofService;
-            tracing::error!("❌ Merkle proof api response was unsuccessful. Error: {e:#}");
+            let kind = FailureKind::from(&source);
+            tracing::error!("❌ Merkle proof api response was unsuccessful. Error: {e:#} ({kind})");
             ErrorResponse::with_status_and_headers(
                 anyhow::anyhow!("Something went wrong."),
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -183,7 +186,7 @@ pub(crate) async fn get_avl_proof(
         .request(
             "eth_getProof",
             rpc_params![
-                state.bridge_contract_address.as_str(),
+                state.config.bridge_contract_address.as_str(),
                 [B256::from_slice(&result[..]).to_string()],
                 block_hash
             ],
@@ -221,7 +224,7 @@ pub(crate) async fn get_avl_proof(
             "Cache-Control",
             format!(
                 "public, max-age={}, immutable",
-                state.avl_proof_cache_maxage
+                state.config.avl_proof_cache_maxage
             ),
         )],
         Json(json!(EthProofResponse {
@@ -251,27 +254,19 @@ pub(crate) async fn get_proof(
                 StatusCode::NOT_FOUND,
             )
         })?;
+    // The same answer for a chain that is not configured and for a chain whose RPC fails.
+    let no_chain_head = || {
+        ErrorResponse::with_status_and_headers(
+            anyhow!("Cannot get chain head. Cannot fetch chain head for chain {chain_id}"),
+            StatusCode::NOT_FOUND,
+            &[("Cache-Control", "public, max-age=60, immutable")],
+        )
+    };
     // The head check and the merkle proof must use the same contract: the one of the requested chain.
-    let contract_address = state
-        .chains
-        .get(&chain_id)
-        .map(|chain| chain.contract_address)
-        .ok_or_else(|| {
-            ErrorResponse::with_status_and_headers(
-                anyhow!("Cannot get chain head. Cannot fetch chain head for chain {chain_id}"),
-                StatusCode::NOT_FOUND,
-                &[("Cache-Control", "public, max-age=60, immutable")],
-            )
-        })?;
-    let head = fetch_chain_head(state.clone(), chain_id)
+    let chain = state.chains.get(&chain_id).ok_or_else(no_chain_head)?;
+    let head = chain_head(chain, chain_id)
         .await
-        .map_err(|e| {
-            ErrorResponse::with_status_and_headers(
-                anyhow!("Cannot get chain head. {e:#}"),
-                StatusCode::NOT_FOUND,
-                &[("Cache-Control", "public, max-age=60, immutable")],
-            )
-        })?;
+        .map_err(|_| no_chain_head())?;
     if requested_block.number > head {
         tracing::warn!(
             "Contract not yet synced for the provided block hash {}, the last synced block number {}",
@@ -291,7 +286,7 @@ pub(crate) async fn get_proof(
 
     let data_proof_response_fut = spawn_kate_proof(state.clone(), index, block_hash);
     let merkle_proof_range_fut =
-        spawn_merkle_proof_range_fetch(state.clone(), chain_id, contract_address, block_hash);
+        spawn_merkle_proof_range_fetch(state.clone(), chain_id, chain.contract_address, block_hash);
     let (data_proof, range_response) = join!(data_proof_response_fut, merkle_proof_range_fut);
 
     let data_proof_res = data_proof
@@ -349,9 +344,10 @@ pub(crate) async fn get_proof(
                 &[("Cache-Control", "public, max-age=60, immutable")],
             ));
         }
-        Err(_) => {
+        Err(source) => {
             let err = UpstreamError::MerkleProofService;
-            tracing::error!("Cannot get merkle proof api response {:?}", err);
+            let kind = FailureKind::from(&source);
+            tracing::error!("Cannot get merkle proof api response {err:?} ({kind})");
             return Err(ErrorResponse::with_status_and_headers(
                 anyhow!("error: {err}"),
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -372,7 +368,10 @@ pub(crate) async fn get_proof(
         StatusCode::OK,
         [(
             "Cache-Control",
-            format!("public, max-age={}, immutable", state.proof_cache_maxage),
+            format!(
+                "public, max-age={}, immutable",
+                state.config.proof_cache_maxage
+            ),
         )],
         Json(json!(AggregatedResponse::new(
             range_data,
@@ -406,8 +405,8 @@ fn spawn_merkle_proof_range_fetch(
 ) -> JoinHandle<Result<MerkleProofAPIResponse, reqwest::Error>> {
     let url = format!(
         "{}?chainName={}&contractChainId={}&contractAddress={}&blockHash={}",
-        state.merkle_proof_service_base_url,
-        state.avail_chain_name,
+        state.config.merkle_proof_service_base_url,
+        state.config.avail_chain_name,
         contract_chain_id,
         contract_address,
         block_hash
@@ -419,22 +418,6 @@ fn spawn_merkle_proof_range_fetch(
             Err(e) => Err(e),
         }
     })
-}
-
-// fetch_chain_head returns current state of the chain head on the chain with provided chain id
-async fn fetch_chain_head(state: Arc<AppState>, chain_id: u64) -> Result<u32> {
-    let response: Response<Body> = get_head(Path(chain_id), State(state)).await.into_response();
-    if response.status() != StatusCode::OK {
-        Err(anyhow::anyhow!(
-            "Cannot fetch chain head for chain {}",
-            chain_id
-        ))
-    } else {
-        let body = response.into_body();
-        let b = to_bytes(body, 2048).await?;
-        let body: ChainHeadResponse = serde_json::from_slice(b.to_vec().as_slice())?;
-        Ok(body.head)
-    }
 }
 
 #[derive(Deserialize)]
@@ -613,7 +596,7 @@ async fn test_proof_asks_merkle_service_for_requested_chain_contract() {
     let chain_contract = Address::repeat_byte(0x11);
     let mut state = Arc::into_inner(test_state()).unwrap();
     state.avail_client = HttpClientBuilder::default().build(&url).unwrap();
-    state.merkle_proof_service_base_url = format!("{url}/merkle");
+    state.config.merkle_proof_service_base_url = format!("{url}/merkle");
     state.chains = HashMap::from([(
         17000,
         Chain {
@@ -667,4 +650,105 @@ async fn test_proof_error_for_unsupported_chain() {
         body,
         r#"{"error":"Cannot get chain head. Cannot fetch chain head for chain 5"}"#
     );
+}
+
+#[tokio::test]
+async fn test_proof_error_when_chain_rpc_is_unreachable() {
+    use serde_json::Value;
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    let rpc = Router::new().fallback(|Json(request): Json<Value>| async move {
+        Json(json!({"jsonrpc": "2.0", "id": request["id"], "result": {"number": "0x5"}}))
+    });
+    tokio::spawn(async move { axum::serve(listener, rpc).await });
+
+    // The Avail RPC answers. Chain 1 of the test state has an RPC URL where nothing listens.
+    let (log, _guard) = LogBuffer::capture();
+    let mut state = Arc::into_inner(test_state()).unwrap();
+    state.avail_client = HttpClientBuilder::default().build(&url).unwrap();
+    let query = ProofQueryStruct {
+        index: 0,
+        block_hash: B256::ZERO,
+    };
+    let response = get_proof(Path(1), Query(query), State(Arc::new(state)))
+        .await
+        .into_response();
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    assert_eq!(
+        response.headers()["Cache-Control"],
+        "public, max-age=60, immutable"
+    );
+    let body = to_bytes(response.into_body(), 2048).await.unwrap();
+    assert_eq!(
+        body,
+        r#"{"error":"Cannot get chain head. Cannot fetch chain head for chain 1"}"#
+    );
+    let log = log.text();
+    let line =
+        "❌ Cannot get latest block from contract: chain RPC request failed (connect failed)";
+    assert!(log.contains(line), "{log}");
+}
+
+/// The state for a proof request: the Avail RPC and the chain RPC of chain 1 answer, and nothing
+/// listens at the URL of the merkle proof service.
+#[cfg(test)]
+async fn state_without_merkle_proof_service() -> Arc<AppState> {
+    use crate::state::{Chain, chain_provider};
+    use axum::routing::post;
+    use std::collections::HashMap;
+
+    let url = serve(Router::new().route("/", post(rpc))).await;
+    let mut state = Arc::into_inner(test_state()).unwrap();
+    state.avail_client = HttpClientBuilder::default().build(&url).unwrap();
+    state.chains = HashMap::from([(
+        1,
+        Chain {
+            provider: chain_provider(url.parse().unwrap()),
+            contract_address: Address::ZERO,
+        },
+    )]);
+    Arc::new(state)
+}
+
+#[tokio::test]
+async fn test_eth_proof_error_when_merkle_proof_service_is_unreachable() {
+    let (log, _guard) = LogBuffer::capture();
+    let state = state_without_merkle_proof_service().await;
+    let response = get_eth_proof(
+        Path(B256::ZERO),
+        Query(IndexStruct { index: 0 }),
+        State(state),
+    )
+    .await
+    .into_response();
+    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    let body = to_bytes(response.into_body(), 2048).await.unwrap();
+    assert_eq!(body, r#"{"error":"Something went wrong."}"#);
+    let log = log.text();
+    let line = "❌ Merkle proof api response was unsuccessful. Error: merkle proof service request failed (connect failed)";
+    assert!(log.contains(line), "{log}");
+}
+
+#[tokio::test]
+async fn test_proof_error_when_merkle_proof_service_is_unreachable() {
+    let (log, _guard) = LogBuffer::capture();
+    let state = state_without_merkle_proof_service().await;
+    let query = ProofQueryStruct {
+        index: 0,
+        block_hash: B256::ZERO,
+    };
+    let response = get_proof(Path(1), Query(query), State(state))
+        .await
+        .into_response();
+    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    let body = to_bytes(response.into_body(), 2048).await.unwrap();
+    assert_eq!(
+        body,
+        r#"{"error":"error: merkle proof service request failed"}"#
+    );
+    let log = log.text();
+    let line =
+        "Cannot get merkle proof api response merkle proof service request failed (connect failed)";
+    assert!(log.contains(line), "{log}");
 }

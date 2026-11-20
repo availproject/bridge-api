@@ -1,11 +1,13 @@
 use self::TxDirection::{AvailEth, EthAvail};
-use crate::error::{ErrorResponse, UpstreamError};
+use crate::error::{ErrorResponse, FailureKind, UpstreamError};
 #[cfg(test)]
 use crate::heads::error_body;
 use crate::heads::{HeaderBlockNumber, RangeBlocksAPIResponse};
 #[cfg(test)]
 use crate::state::test_state;
 use crate::state::{AppState, SLOT_BLOCK_HEAD};
+#[cfg(test)]
+use crate::test_util::LogBuffer;
 
 use anyhow::anyhow;
 use axum::{
@@ -58,8 +60,10 @@ pub(crate) async fn transactions(
                 ErrorResponse::with_status(anyhow!("Not found"), StatusCode::INTERNAL_SERVER_ERROR)
             })?;
 
-        let claim_estimate =
-            time_until_next_helios_update(*helios_update_timestamp, state.helios_update_frequency);
+        let claim_estimate = time_until_next_helios_update(
+            *helios_update_timestamp,
+            state.config.helios_update_frequency,
+        );
 
         for mut tx in transactions {
             let mut estimate = None;
@@ -134,7 +138,7 @@ pub(crate) async fn transactions(
                 Some(time_until_next_vector_update(
                     latest_block_number,
                     range_end,
-                    state.vector_update_frequency,
+                    state.config.vector_update_frequency,
                     20,
                 ))
             }
@@ -196,44 +200,33 @@ fn database_error(e: sqlx::Error) -> ErrorResponse {
 
 async fn fetch_range_blocks(
     state: &Arc<AppState>,
-) -> Result<RangeBlocksAPIResponse, ErrorResponse> {
+) -> Result<RangeBlocksAPIResponse, UpstreamError> {
     let block_range_url = format!(
         "{}/{}?chainName={}&contractChainId={}&contractAddress={}",
-        state.merkle_proof_service_base_url,
+        state.config.merkle_proof_service_base_url,
         "range",
-        state.avail_chain_name,
-        state.contract_chain_id,
-        state.contract_address
+        state.config.avail_chain_name,
+        state.config.contract_chain_id,
+        state.config.contract_address
     );
 
+    // The caller goes on without the range, so the error carries no response.
+    let failed = |source: reqwest::Error| {
+        let e = UpstreamError::MerkleProofService;
+        let kind = FailureKind::from(&source);
+        tracing::error!("Cannot parse range blocks: {e:#} ({kind})");
+        e
+    };
     let response = state
         .request_client
         .get(block_range_url)
         .send()
         .await
-        .map_err(|_| {
-            let e = UpstreamError::MerkleProofService;
-            tracing::error!("Cannot parse range blocks: {e:#}");
-            ErrorResponse::with_status_and_headers(
-                anyhow!("{e:#}"),
-                StatusCode::INTERNAL_SERVER_ERROR,
-                &[("Cache-Control", "public, max-age=60, must-revalidate")],
-            )
-        })?;
-
-    let range_blocks = response
+        .map_err(failed)?;
+    response
         .json::<RangeBlocksAPIResponse>()
         .await
-        .map_err(|_| {
-            let e = UpstreamError::MerkleProofService;
-            tracing::error!("Cannot parse range blocks: {e:#}");
-            ErrorResponse::with_status_and_headers(
-                anyhow!("{e:#}"),
-                StatusCode::INTERNAL_SERVER_ERROR,
-                &[("Cache-Control", "public, max-age=60, must-revalidate")],
-            )
-        })?;
-    Ok(range_blocks)
+        .map_err(failed)
 }
 
 fn time_until_next_vector_update(
@@ -349,36 +342,11 @@ fn state_without_database() -> Arc<AppState> {
     Arc::new(state)
 }
 
-/// Collects the log lines of one test.
-#[cfg(test)]
-#[derive(Clone, Default)]
-struct LogBuffer(Arc<std::sync::Mutex<Vec<u8>>>);
-
-#[cfg(test)]
-impl std::io::Write for LogBuffer {
-    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        self.0.lock().unwrap().extend_from_slice(buf);
-        Ok(buf.len())
-    }
-
-    fn flush(&mut self) -> std::io::Result<()> {
-        Ok(())
-    }
-}
-
-// One test checks the body and the log line. tracing caches, per log call site, whether a
-// subscriber wants the event. A second test that reaches `database_error` on a thread without a
-// subscriber can cache "no" first, and then this test's subscriber gets nothing.
+// One test checks the body and the log line, because every test that reaches `database_error`
+// must capture the log (see `LogBuffer`).
 #[tokio::test]
 async fn test_transactions_database_error_is_logged_and_gets_a_fixed_body() {
-    let log = LogBuffer::default();
-    let writer = log.clone();
-    let _guard = tracing::subscriber::set_default(
-        tracing_subscriber::fmt()
-            .with_ansi(false)
-            .with_writer(move || writer.clone())
-            .finish(),
-    );
+    let (log, _guard) = LogBuffer::capture();
 
     let mut answers = vec![];
     for query in [
@@ -404,7 +372,7 @@ async fn test_transactions_database_error_is_logged_and_gets_a_fixed_body() {
     assert_eq!(answers, [fixed_text.clone(), fixed_text]);
 
     // One line for each of the two queries.
-    let log = String::from_utf8(log.0.lock().unwrap().clone()).unwrap();
+    let log = log.text();
     assert_eq!(
         log.matches("Cannot fetch transactions: pool timed out")
             .count(),
@@ -435,4 +403,13 @@ fn test_remaining_time_for_helios_update_with_timestamp_ahead_of_clock() {
     let update = Utc::now().timestamp() + 60;
     let remaining = time_until_next_helios_update(update as u64, 3600);
     assert_eq!(3600, remaining.as_secs());
+}
+
+#[tokio::test]
+async fn test_range_blocks_error_is_logged_with_the_reason() {
+    let (log, _guard) = LogBuffer::capture();
+    assert!(fetch_range_blocks(&test_state()).await.is_err());
+    let log = log.text();
+    let line = "Cannot parse range blocks: merkle proof service request failed (connect failed)";
+    assert!(log.contains(line), "{log}");
 }

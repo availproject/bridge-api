@@ -1,9 +1,11 @@
 use crate::beacon::{ExecutionBlock, Root};
 use crate::contracts::SP1Vector;
-use crate::error::{ErrorResponse, UpstreamError};
+use crate::error::{ErrorResponse, FailureKind, UpstreamError};
 #[cfg(test)]
 use crate::state::test_state;
-use crate::state::{AppState, SLOT_BLOCK_HEAD};
+use crate::state::{AppState, Chain, SLOT_BLOCK_HEAD};
+#[cfg(test)]
+use crate::test_util::{LogBuffer, rpc, serve};
 
 use alloy::primitives::{B256, hex};
 use anyhow::{Context, Result, anyhow};
@@ -50,7 +52,7 @@ pub(crate) async fn get_eth_head(
             "Cache-Control",
             format!(
                 "public, max-age={}, must-revalidate",
-                state.eth_head_cache_maxage
+                state.config.eth_head_cache_maxage
             ),
         )],
         Json(json!(HeadResponseV2 {
@@ -70,33 +72,22 @@ pub(crate) async fn get_avl_head(
 ) -> Result<impl IntoResponse, ErrorResponse> {
     let url = format!(
         "{}/{}?contractChainId={}&contractAddress={}",
-        state.merkle_proof_service_base_url,
+        state.config.merkle_proof_service_base_url,
         "range",
-        state.contract_chain_id,
-        state.contract_address
+        state.config.contract_chain_id,
+        state.config.contract_address
     );
-    let response = state.request_client.get(url).send().await.map_err(|_| {
+    let failed = |source: reqwest::Error| {
         let e = UpstreamError::MerkleProofService;
-        tracing::error!("❌ Cannot parse range blocks: {e:#}");
-        ErrorResponse::with_status_and_headers(
-            anyhow!("{e:#}"),
-            StatusCode::INTERNAL_SERVER_ERROR,
-            &[("Cache-Control", "public, max-age=60, must-revalidate")],
-        )
-    })?;
-
+        let kind = FailureKind::from(&source);
+        tracing::error!("❌ Cannot parse range blocks: {e:#} ({kind})");
+        ErrorResponse::upstream_failed(e)
+    };
+    let response = state.request_client.get(url).send().await.map_err(failed)?;
     let range_blocks = response
         .json::<RangeBlocksAPIResponse>()
         .await
-        .map_err(|_| {
-            let e = UpstreamError::MerkleProofService;
-            tracing::error!("❌ Cannot parse range blocks: {e:#}");
-            ErrorResponse::with_status_and_headers(
-                anyhow!("{e:#}"),
-                StatusCode::INTERNAL_SERVER_ERROR,
-                &[("Cache-Control", "public, max-age=60, must-revalidate")],
-            )
-        })?;
+        .map_err(failed)?;
 
     Ok((
         StatusCode::OK,
@@ -104,7 +95,7 @@ pub(crate) async fn get_avl_head(
             "Cache-Control",
             format!(
                 "public, max-age={}, must-revalidate",
-                state.avl_head_cache_maxage
+                state.config.avl_head_cache_maxage
             ),
         )],
         Json(json!(range_blocks)),
@@ -124,25 +115,17 @@ pub(crate) async fn get_head(
         )
     })?;
 
-    let contract = SP1Vector::new(chain.contract_address, chain.provider.clone());
-    let head = contract.latestBlock().call().await.map_err(|_| {
-        let e = UpstreamError::Rpc;
-        tracing::error!("❌ Cannot get latest block from contract: {:?}", e);
-        ErrorResponse::with_status_and_headers(
-            anyhow!("{e:#}"),
-            StatusCode::INTERNAL_SERVER_ERROR,
-            &[("Cache-Control", "public, max-age=60, must-revalidate")],
-        )
-    })?;
+    let head = chain_head(chain, chain_id)
+        .await
+        .map_err(ErrorResponse::upstream_failed)?;
 
-    tracing::debug!("✅ Latest block on chain {}: {}", chain_id, head);
     Ok((
         StatusCode::OK,
         [(
             "Cache-Control",
             format!(
                 "public, max-age={}, must-revalidate",
-                state.head_cache_maxage
+                state.config.head_cache_maxage
             ),
         )],
         Json(json!(ChainHeadResponse { head })),
@@ -150,118 +133,148 @@ pub(crate) async fn get_head(
         .into_response())
 }
 
-pub(crate) async fn track_slot_avail_task(state: Arc<AppState>) -> Result<()> {
-    let pallet = "Vector";
-    let head = "Head";
-    let timestamp = "Timestamps";
+/// chain_head returns the latest Avail block that the chain's contract has a commitment for
+pub(crate) async fn chain_head(chain: &Chain, chain_id: u64) -> Result<u32, UpstreamError> {
+    let contract = SP1Vector::new(chain.contract_address, chain.provider.clone());
+    let head = contract.latestBlock().call().await.map_err(|source| {
+        let e = UpstreamError::Rpc;
+        let kind = FailureKind::from(&source);
+        tracing::error!("❌ Cannot get latest block from contract: {e:?} ({kind})");
+        e
+    })?;
 
-    let do_work = || {
-        let state = state.clone();
-        async move {
-            loop {
-                let finalized_block_hash_str: String = state
-                    .avail_client
-                    .request("chain_getFinalizedHead", rpc_params![])
-                    .await
-                    .context("finalized head")?;
+    tracing::debug!("✅ Latest block on chain {}: {}", chain_id, head);
+    Ok(head)
+}
 
-                let head_key = format!(
-                    "0x{}{}",
-                    hex::encode(twox_128(pallet.as_bytes())),
-                    hex::encode(twox_128(head.as_bytes()))
-                );
-                let head_str: String = state
-                    .avail_client
-                    .request(
-                        "state_getStorage",
-                        rpc_params![head_key, finalized_block_hash_str.clone()],
-                    )
-                    .await
-                    .context("head key")?;
-
-                let slot_from_hex =
-                    sp_core::bytes::from_hex(head_str.as_str()).context("decode slot")?;
-                let slot: u64 =
-                    Decode::decode(&mut slot_from_hex.as_slice()).context("slot decode 2")?;
-
-                let timestamp_key = format!(
-                    "0x{}{}{}",
-                    hex::encode(twox_128(pallet.as_bytes())),
-                    hex::encode(twox_128(timestamp.as_bytes())),
-                    &head_str[2..]
-                );
-
-                let timestamp_str: String = state
-                    .avail_client
-                    .request(
-                        "state_getStorage",
-                        rpc_params![timestamp_key, finalized_block_hash_str],
-                    )
-                    .await
-                    .context("timestamp key")?;
-
-                let timestamp_from_hex =
-                    sp_core::bytes::from_hex(timestamp_str.as_str()).context("timestamp decode")?;
-
-                let timestamp: u64 = Decode::decode(&mut timestamp_from_hex.as_slice())
-                    .context("timestamp decode 2")?;
-
-                // The read guard is dropped at the end of this statement, before the sleep.
-                let old_slot = SLOT_BLOCK_HEAD.read().await.as_ref().map(|head| head.0);
-                if old_slot == Some(slot) {
-                    tokio::time::sleep(Duration::from_secs(60 * 10)).await;
-                    continue;
-                }
-
-                let response = state
-                    .request_client
-                    .get(format!(
-                        "{}/eth/v2/beacon/blocks/{}",
-                        state.beaconchain_base_url, slot
-                    ))
-                    .send()
-                    .await
-                    .map_err(|_| UpstreamError::Beacon)
-                    .context("Cannot get beacon block")?;
-                let root = response
-                    .json::<Root>()
-                    .await
-                    .context("Cannot decode beacon response")?;
-                let (bl, hash) = match root.data.message.body.execution_block()? {
-                    ExecutionBlock::Known { number, hash } => (number, hash),
-                    ExecutionBlock::ByHash(hash) => {
-                        let header: Option<HeaderBlockNumber> = state
-                            .ethereum_client
-                            .request("eth_getBlockByHash", rpc_params![hash, false])
-                            .await
-                            .context("Cannot get execution block")?;
-                        let header =
-                            header.with_context(|| format!("Execution block {hash} not found"))?;
-                        (header.number as u64, hash)
-                    }
-                };
-                let mut slot_block_head = SLOT_BLOCK_HEAD.write().await;
-                tracing::info!("Beacon mapping: {slot}:{bl}");
-                *slot_block_head = Some((slot, bl, hash, timestamp));
-                info!("Timestamp form task: {:?}", timestamp);
-
-                drop(slot_block_head);
-
-                tokio::time::sleep(Duration::from_secs(60 * 5)).await;
-            }
-            #[allow(unreachable_code)] // forces for type inference later on
-            Ok::<(), anyhow::Error>(())
-        }
-    };
-
+/// track_slot_avail_task keeps `SLOT_BLOCK_HEAD` up to date. It returns when the retries run out.
+pub(crate) async fn track_slot_avail_task(state: Arc<AppState>) -> anyhow::Error {
     let retry_settings = ExponentialBuilder::default()
         .with_min_delay(Duration::from_secs(5))
         .with_max_delay(Duration::from_secs(60))
         .with_max_times(10)
         .with_factor(2.0);
-    do_work.retry(&retry_settings).await?;
+    run_passes(retry_settings, || track_slot_pass(&state)).await
+}
 
-    Ok(())
+/// run_passes calls `pass` again and again, and waits between two passes for the time that the
+/// pass returned. A failed pass is retried with `retry_settings`. It returns the last error.
+async fn run_passes<F, Fut>(retry_settings: ExponentialBuilder, pass: F) -> anyhow::Error
+where
+    F: Fn() -> Fut,
+    Fut: Future<Output = Result<Duration>>,
+{
+    loop {
+        // Each pass gets a new backoff, so the retry count and the delay start again after a
+        // good pass.
+        let retried = (&pass).retry(&retry_settings).notify(|e, delay| {
+            tracing::warn!("Head tracking failed, retry in {delay:?}: {e:#}");
+        });
+        match retried.await {
+            Ok(wait) => tokio::time::sleep(wait).await,
+            Err(e) => return e,
+        }
+    }
+}
+
+/// The error for a failed request to the beacon API: the fixed text and why it failed.
+fn beacon_failed(source: reqwest::Error) -> anyhow::Error {
+    anyhow!("{} ({})", UpstreamError::Beacon, FailureKind::from(&source))
+}
+
+/// track_slot_pass reads the Ethereum head from the Vector pallet once and stores it. It returns
+/// the time to wait before the next pass.
+async fn track_slot_pass(state: &AppState) -> Result<Duration> {
+    let pallet = "Vector";
+    let head = "Head";
+    let timestamp = "Timestamps";
+
+    let finalized_block_hash_str: String = state
+        .avail_client
+        .request("chain_getFinalizedHead", rpc_params![])
+        .await
+        .context("finalized head")?;
+
+    let head_key = format!(
+        "0x{}{}",
+        hex::encode(twox_128(pallet.as_bytes())),
+        hex::encode(twox_128(head.as_bytes()))
+    );
+    let head_str: String = state
+        .avail_client
+        .request(
+            "state_getStorage",
+            rpc_params![head_key, finalized_block_hash_str.clone()],
+        )
+        .await
+        .context("head key")?;
+
+    let slot_from_hex = sp_core::bytes::from_hex(head_str.as_str()).context("decode slot")?;
+    let slot: u64 = Decode::decode(&mut slot_from_hex.as_slice()).context("slot decode 2")?;
+
+    let timestamp_key = format!(
+        "0x{}{}{}",
+        hex::encode(twox_128(pallet.as_bytes())),
+        hex::encode(twox_128(timestamp.as_bytes())),
+        &head_str[2..]
+    );
+
+    let timestamp_str: String = state
+        .avail_client
+        .request(
+            "state_getStorage",
+            rpc_params![timestamp_key, finalized_block_hash_str],
+        )
+        .await
+        .context("timestamp key")?;
+
+    let timestamp_from_hex =
+        sp_core::bytes::from_hex(timestamp_str.as_str()).context("timestamp decode")?;
+
+    let timestamp: u64 =
+        Decode::decode(&mut timestamp_from_hex.as_slice()).context("timestamp decode 2")?;
+
+    // The read guard is dropped at the end of this statement.
+    let old_slot = SLOT_BLOCK_HEAD.read().await.as_ref().map(|head| head.0);
+    if old_slot == Some(slot) {
+        return Ok(Duration::from_secs(60 * 10));
+    }
+
+    let response = state
+        .request_client
+        .get(format!(
+            "{}/eth/v2/beacon/blocks/{}",
+            state.config.beaconchain_base_url, slot
+        ))
+        .send()
+        .await
+        .map_err(beacon_failed)
+        .context("Cannot get beacon block")?;
+    let root = response
+        .json::<Root>()
+        .await
+        .map_err(beacon_failed)
+        .context("Cannot decode beacon response")?;
+    let (bl, hash) = match root.data.message.body.execution_block()? {
+        ExecutionBlock::Known { number, hash } => (number, hash),
+        ExecutionBlock::ByHash(hash) => {
+            let header: Option<HeaderBlockNumber> = state
+                .ethereum_client
+                .request("eth_getBlockByHash", rpc_params![hash, false])
+                .await
+                .context("Cannot get execution block")?;
+            let header = header.with_context(|| format!("Execution block {hash} not found"))?;
+            (header.number as u64, hash)
+        }
+    };
+    let mut slot_block_head = SLOT_BLOCK_HEAD.write().await;
+    tracing::info!("Beacon mapping: {slot}:{bl}");
+    *slot_block_head = Some((slot, bl, hash, timestamp));
+    info!("Timestamp form task: {:?}", timestamp);
+
+    drop(slot_block_head);
+
+    Ok(Duration::from_secs(60 * 5))
 }
 
 #[derive(Serialize)]
@@ -274,7 +287,7 @@ pub struct HeadResponseV2 {
     pub timestamp_diff: u64,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize)]
 pub struct ChainHeadResponse {
     pub head: u32,
 }
@@ -315,18 +328,66 @@ pub(crate) async fn error_body(response: Response) -> (StatusCode, String) {
 
 #[tokio::test]
 async fn test_head_error_when_rpc_is_unreachable() {
+    let (log, _guard) = LogBuffer::capture();
     let response = get_head(Path(1), State(test_state())).await.into_response();
     let (status, body) = error_body(response).await;
     assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
     assert_eq!(body, r#"{"error":"chain RPC request failed"}"#);
+    // The log line says why the request failed. The body does not.
+    let log = log.text();
+    let line =
+        "❌ Cannot get latest block from contract: chain RPC request failed (connect failed)";
+    assert!(log.contains(line), "{log}");
 }
 
 #[tokio::test]
 async fn test_avl_head_error_when_merkle_proof_service_is_unreachable() {
+    let (log, _guard) = LogBuffer::capture();
     let response = get_avl_head(State(test_state())).await.into_response();
+    assert_eq!(
+        response.headers()["Cache-Control"],
+        "public, max-age=60, must-revalidate"
+    );
     let (status, body) = error_body(response).await;
     assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
     assert_eq!(body, r#"{"error":"merkle proof service request failed"}"#);
+    let log = log.text();
+    let line = "❌ Cannot parse range blocks: merkle proof service request failed (connect failed)";
+    assert!(log.contains(line), "{log}");
+}
+
+/// The state for a head task pass: the Avail RPC answers, and the beacon API is at `beacon_url`.
+#[cfg(test)]
+async fn head_task_state(beacon_url: String) -> AppState {
+    use axum::routing::post;
+    use jsonrpsee::http_client::HttpClientBuilder;
+
+    let avail_url = serve(axum::Router::new().route("/", post(rpc))).await;
+    let mut state = Arc::into_inner(test_state()).unwrap();
+    state.avail_client = HttpClientBuilder::default().build(avail_url).unwrap();
+    state.config.beaconchain_base_url = beacon_url;
+    state
+}
+
+#[tokio::test]
+async fn test_head_task_error_when_beacon_api_is_unreachable() {
+    let state = head_task_state("http://127.0.0.1:1".to_owned()).await;
+    let e = track_slot_pass(&state).await.unwrap_err();
+    assert_eq!(
+        format!("{e:#}"),
+        "Cannot get beacon block: beacon request failed (connect failed)"
+    );
+}
+
+#[tokio::test]
+async fn test_head_task_error_when_beacon_answer_is_not_json() {
+    let beacon_url = serve(axum::Router::new().fallback(|| async { "this is not json" })).await;
+    let state = head_task_state(beacon_url).await;
+    let e = track_slot_pass(&state).await.unwrap_err();
+    assert_eq!(
+        format!("{e:#}"),
+        "Cannot decode beacon response: beacon request failed (bad response)"
+    );
 }
 
 #[tokio::test]
@@ -338,4 +399,85 @@ async fn test_eth_head_with_timestamp_ahead_of_clock() {
     let body = to_bytes(response.into_body(), 2048).await.unwrap();
     let body: Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(body["timestampDiff"], 0);
+}
+
+/// Retry settings of the head task, with delays of 1 ms, 2 ms and then 4 ms.
+#[cfg(test)]
+fn fast_retry_settings() -> ExponentialBuilder {
+    ExponentialBuilder::default()
+        .with_min_delay(Duration::from_millis(1))
+        .with_max_delay(Duration::from_millis(4))
+        .with_max_times(10)
+        .with_factor(2.0)
+}
+
+#[tokio::test]
+async fn test_retries_count_per_failure_streak() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use tokio::sync::Notify;
+
+    let (log, _guard) = LogBuffer::capture();
+    let calls = AtomicUsize::new(0);
+    let done = Notify::new();
+    // Every odd pass fails and every even pass is good, so no failure streak is longer than 1.
+    let pass = || async {
+        let call = calls.fetch_add(1, Ordering::SeqCst) + 1;
+        if call > 60 {
+            done.notify_one();
+            std::future::pending::<()>().await;
+        }
+        if call % 2 == 1 {
+            Err(anyhow!("failure in pass {call}"))
+        } else {
+            Ok(Duration::ZERO)
+        }
+    };
+
+    tokio::select! {
+        e = run_passes(fast_retry_settings(), pass) => panic!(
+            "gave up after {} passes: {e:#}",
+            calls.load(Ordering::SeqCst)
+        ),
+        _ = done.notified() => {}
+    }
+    // 30 failed passes, and the task still runs.
+    assert_eq!(calls.load(Ordering::SeqCst), 61);
+    // Each retry waited the first delay again. With one backoff for all passes the second retry
+    // waits 2 ms.
+    let log = log.text();
+    assert_eq!(log.matches("Head tracking failed, retry in").count(), 30);
+    assert_eq!(log.matches("retry in 1ms").count(), 30, "{log}");
+}
+
+#[tokio::test]
+async fn test_failed_pass_is_retried_ten_times_and_each_retry_is_logged() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let (log, _guard) = LogBuffer::capture();
+    let calls = AtomicUsize::new(0);
+    let pass = || async {
+        let call = calls.fetch_add(1, Ordering::SeqCst) + 1;
+        Err::<Duration, _>(anyhow!("failure in pass {call}"))
+    };
+
+    let e = run_passes(fast_retry_settings(), pass).await;
+
+    assert_eq!(calls.load(Ordering::SeqCst), 11);
+    assert_eq!(format!("{e:#}"), "failure in pass 11");
+    let log = log.text();
+    let retry_lines: Vec<_> = log
+        .lines()
+        .filter_map(|line| {
+            line.split_once("Head tracking failed, ")
+                .map(|(_, rest)| rest)
+        })
+        .collect();
+    // The delay doubles up to the maximum of 4 ms.
+    let expected: Vec<_> = (1..=10)
+        .map(|call| {
+            let delay = [1, 2, 4][(call - 1).min(2)];
+            format!("retry in {delay}ms: failure in pass {call}")
+        })
+        .collect();
+    assert_eq!(retry_lines, expected, "{log}");
 }
