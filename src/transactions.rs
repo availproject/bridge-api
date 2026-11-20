@@ -18,15 +18,12 @@ use chrono::Utc;
 use jsonrpsee::{core::ClientError, core::client::ClientT, rpc_params};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use serde_with::serde_as;
 use sp_core::H160;
-use sqlx::FromRow;
 #[cfg(test)]
 use sqlx::postgres::PgPoolOptions;
 use std::sync::Arc;
 use std::time::Duration;
 
-#[inline(always)]
 pub(crate) async fn transactions(
     Query(address_query): Query<TransactionQueryParams>,
     State(state): State<Arc<AppState>>,
@@ -66,10 +63,10 @@ pub(crate) async fn transactions(
 
         for mut tx in transactions {
             let mut estimate = None;
+            // safe cast
             if tx.final_status != BridgeStatusEnum::Bridged
                 && tx.source_block_height <= (*last_eth_block) as i32
             {
-                // safe cast
                 tx.final_status = BridgeStatusEnum::ClaimReady
             }
             if tx.final_status != BridgeStatusEnum::Bridged
@@ -78,23 +75,23 @@ pub(crate) async fn transactions(
                 estimate = Some(claim_estimate.as_secs());
             }
 
-            transaction_data_results.push(TransactionData::new(
-                EthAvail,
-                tx.message_id,
-                tx.sender,
-                tx.receiver,
-                tx.source_block_hash,
-                tx.source_transaction_hash,
-                tx.amount,
-                tx.final_status,
-                tx.timestamp,
-                estimate,
-                Some(tx.source_block_height),
-                None,
-                tx.destination_block_height,
-                tx.destination_tx_index,
-                None,
-            ));
+            transaction_data_results.push(TransactionData {
+                direction: EthAvail,
+                message_id: tx.message_id,
+                sender: tx.sender,
+                receiver: tx.receiver,
+                source_block_hash: tx.source_block_hash,
+                source_tx_hash: tx.source_transaction_hash,
+                amount: tx.amount,
+                status: tx.final_status,
+                timestamp: tx.timestamp,
+                claim_estimate: estimate,
+                source_block_number: Some(tx.source_block_height),
+                source_tx_index: None,
+                destination_block_number: tx.destination_block_height,
+                destination_tx_index: tx.destination_tx_index,
+                destination_tx_hash: None,
+            });
         }
     }
 
@@ -158,23 +155,23 @@ pub(crate) async fn transactions(
                 estimate = claim_estimate.map(|claim_estimate| claim_estimate.as_secs());
             }
 
-            transaction_data_results.push(TransactionData::new(
-                AvailEth,
-                tx.message_id,
-                tx.sender.unwrap_or("".to_string()), // cannot be empty because of where clause
-                tx.receiver,
-                tx.source_block_hash,
-                tx.source_transaction_hash,
-                tx.amount,
-                tx.final_status,
-                tx.block_timestamp,
-                estimate,
-                Some(tx.source_block_height),
-                Some(tx.source_tx_index),
-                None,
-                None,
-                tx.destination_tx_hash,
-            ));
+            transaction_data_results.push(TransactionData {
+                direction: AvailEth,
+                message_id: tx.message_id,
+                sender: tx.sender.unwrap_or("".to_string()), // cannot be empty because of where clause
+                receiver: tx.receiver,
+                source_block_hash: tx.source_block_hash,
+                source_tx_hash: tx.source_transaction_hash,
+                amount: tx.amount,
+                status: tx.final_status,
+                timestamp: tx.block_timestamp,
+                claim_estimate: estimate,
+                source_block_number: Some(tx.source_block_height),
+                source_tx_index: Some(tx.source_tx_index),
+                destination_block_number: None,
+                destination_tx_index: None,
+                destination_tx_hash: tx.destination_tx_hash,
+            });
         }
     }
 
@@ -254,12 +251,12 @@ fn time_until_next_vector_update(
 fn time_until_next_helios_update(timestamp: u64, helios_update_frequency: u32) -> Duration {
     let now = Utc::now().timestamp() as u64;
     let time_since_update = now.saturating_sub(timestamp);
-    let update_frequency = Duration::from_secs(helios_update_frequency as u64).as_secs();
+    let update_frequency = helios_update_frequency as u64;
     let remaining = update_frequency.saturating_sub(time_since_update);
     Duration::from_secs(remaining)
 }
 
-#[derive(Debug, PartialEq, Serialize, Deserialize, sqlx::Type)]
+#[derive(Debug, PartialEq, Serialize, sqlx::Type)]
 #[sqlx(type_name = "status")]
 pub enum BridgeStatusEnum {
     #[sqlx(rename = "initiated")]
@@ -279,9 +276,7 @@ pub struct TransactionQueryParams {
     pub avail_address: Option<String>,
 }
 
-#[derive(Debug, Serialize, Deserialize, FromRow)]
-#[serde_as]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug)]
 pub struct EthTransactionRow {
     pub message_id: BigDecimal,
     pub sender: String,
@@ -296,9 +291,7 @@ pub struct EthTransactionRow {
     pub destination_tx_index: Option<i32>,
 }
 
-#[derive(Debug, Serialize, Deserialize, FromRow)]
-#[serde_as]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug)]
 pub struct AvailTransactionRow {
     pub message_id: BigDecimal,
     pub sender: Option<String>,
@@ -313,14 +306,13 @@ pub struct AvailTransactionRow {
     pub destination_tx_hash: Option<String>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize)]
 pub enum TxDirection {
     AvailEth,
     EthAvail,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-#[serde_as]
+#[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TransactionData {
     pub direction: TxDirection,
@@ -344,44 +336,6 @@ pub struct TransactionData {
     pub destination_tx_index: Option<i32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub destination_tx_hash: Option<String>,
-}
-
-impl TransactionData {
-    pub fn new(
-        direction: TxDirection,
-        message_id: BigDecimal,
-        sender: String,
-        receiver: String,
-        source_block_hash: String,
-        source_tx_hash: String,
-        amount: String,
-        status: BridgeStatusEnum,
-        timestamp: i64,
-        claim_estimate: Option<u64>,
-        source_block_number: Option<i32>,
-        source_tx_index: Option<i32>,
-        destination_block_number: Option<i32>,
-        destination_tx_index: Option<i32>,
-        destination_tx_hash: Option<String>,
-    ) -> Self {
-        Self {
-            direction,
-            message_id,
-            sender,
-            receiver,
-            source_block_hash,
-            source_tx_hash,
-            amount,
-            status,
-            timestamp,
-            claim_estimate,
-            source_block_number,
-            source_tx_index,
-            destination_block_number,
-            destination_tx_index,
-            destination_tx_hash,
-        }
-    }
 }
 
 #[cfg(test)]

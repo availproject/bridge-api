@@ -14,7 +14,6 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::RwLock;
 
-#[derive(Debug)]
 pub struct AppState {
     pub avail_client: HttpClient,
     pub ethereum_client: HttpClient,
@@ -32,15 +31,12 @@ pub struct AppState {
     pub eth_proof_cache_maxage: u32,
     pub proof_cache_maxage: u32,
     pub eth_proof_failure_cache_maxage: u32,
-    pub slot_mapping_cache_maxage: u32,
-    pub transactions_cache_maxage: u32,
     pub db: PgPool,
     pub chains: HashMap<u64, Chain>,
     pub helios_update_frequency: u32,
     pub vector_update_frequency: u32,
 }
 
-#[derive(Debug)]
 pub struct Chain {
     pub provider: RootProvider,
     pub contract_address: Address,
@@ -115,8 +111,6 @@ pub(crate) fn test_state() -> Arc<AppState> {
         eth_proof_cache_maxage: 172800,
         proof_cache_maxage: 172800,
         eth_proof_failure_cache_maxage: 5400,
-        slot_mapping_cache_maxage: 172800,
-        transactions_cache_maxage: 60,
         db: PgPool::connect_lazy("postgresql://avail:avail@localhost:5432/ui-indexer").unwrap(),
         chains: HashMap::from([(
             1,

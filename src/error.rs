@@ -10,13 +10,6 @@ pub struct ErrorResponse {
 }
 
 impl ErrorResponse {
-    pub fn new(error: anyhow::Error) -> Self {
-        Self {
-            error,
-            headers_keypairs: vec![],
-            status_code: None,
-        }
-    }
     pub fn with_status(error: anyhow::Error, status_code: StatusCode) -> Self {
         Self {
             error,
@@ -42,7 +35,7 @@ impl ErrorResponse {
     }
 }
 
-// Tell axum how to convert `AppError` into a response.
+// Tell axum how to convert `ErrorResponse` into a response.
 impl IntoResponse for ErrorResponse {
     fn into_response(self) -> Response {
         let status = self
@@ -62,7 +55,7 @@ impl IntoResponse for ErrorResponse {
 }
 
 // This enables using `?` on functions that return `Result<_, anyhow::Error>` to turn them into
-// `Result<_, AppError>`. That way you don't need to do that manually.
+// `Result<_, ErrorResponse>`. That way you don't need to do that manually.
 impl<E> From<E> for ErrorResponse
 where
     E: Into<anyhow::Error>,

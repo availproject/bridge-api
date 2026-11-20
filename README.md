@@ -103,9 +103,11 @@ RUSTFLAGS="-C target-cpu=native" cargo run --profile maxperf
 
       ```json
       {
-        "slot":4454752,
-        "timestamp":1709191840,
-        "timestampDiff":1716
+        "blockHash":"0x552856735f65be942639318f690c70f8967411259defa795f4d84eff53c4ac54",
+        "blockNumber":26447998,
+        "slot":15687808,
+        "timestamp":1795078960,
+        "timestampDiff":83977
       }
       ```
 
@@ -204,7 +206,7 @@ RUSTFLAGS="-C target-cpu=native" cargo run --profile maxperf
         }
         ```
 
-### Generate Merkle Proof
+### Generate Merkle Proof for a chain
 
 * To generate a proof, simply query the `v1/proof` endpoint with the mandatory query params block hash, extrinsic index and chain id:
 
@@ -262,7 +264,7 @@ RUSTFLAGS="-C target-cpu=native" cargo run --profile maxperf
 
 ### Get Account/Storage proofs
 
-* To get a proof, simply query the `/v1/avl/proof/:message_id` endpoint with the message id:
+* To get a proof, simply query the `/v1/avl/proof/:block_hash/:messageId` endpoint with the block hash and the message id:
 
   * Request
 
@@ -305,8 +307,8 @@ RUSTFLAGS="-C target-cpu=native" cargo run --profile maxperf
       `GET /v1/transactions?availAddress=0x1a985fdff5f6eee4afce1dc0f367ab925cdca57e7e8585329830fc3ce6ef4e7a&ethAddress=0x48e7e157cf873c15a5a6734ea37c000e1cb2383d`
 
       ```bash
-      # curl <endpoint URL>/v1/transactions?ethAddress=<availAddress>&ethAddress=<ethAddress>
-      curl localhost:8080/v1/transactions?availAddress=0x1a985fdff5f6eee4afce1dc0f367ab925cdca57e7e8585329830fc3ce6ef4e7a&ethAddress=0x48e7e157cf873c15a5a6734ea37c000e1cb2383d
+      # curl "<endpoint URL>/v1/transactions?availAddress=<availAddress>&ethAddress=<ethAddress>"
+      curl "localhost:8080/v1/transactions?availAddress=0x1a985fdff5f6eee4afce1dc0f367ab925cdca57e7e8585329830fc3ce6ef4e7a&ethAddress=0x48e7e157cf873c15a5a6734ea37c000e1cb2383d"
       ```
 
       * Response
@@ -317,48 +319,30 @@ RUSTFLAGS="-C target-cpu=native" cargo run --profile maxperf
               "amount": "200000000000000000000000",
               "claimEstimate": 3284,
               "direction": "EthAvail",
-              "messageId": 1771,
+              "messageId": "1771",
               "receiver": "0xc2b6ddd8382bcb813753562adb3d30cda40369750401b195dbabc6ac9bce620c",
               "sender": "0xc1b2aff52877b4a23422f554f3d240be50ec80cf",
               "sourceBlockHash": "0x1b18ad7d42e941b5df80585c2674aa9cd70cca6312dcca6374237b512e59ad7a",
+              "sourceBlockNumber": 23362397,
               "sourceTxHash": "0x3d4fa0e38bae95ad0a512def7c8d19174ecb943fe6a49fab55682ec6f89ab60a",
-              "status": "InProgress"
+              "status": "InProgress",
+              "timestamp": 1757865887
             },
             {
               "amount": "189766320000000000000000",
               "claimEstimate": 3284,
               "direction": "EthAvail",
-              "messageId": 1751,
+              "messageId": "1751",
               "receiver": "0xc2b6ddd8382bcb813753562adb3d30cda40369750401b195dbabc6ac9bce620c",
               "sender": "0xc1b2aff52877b4a23422f554f3d240be50ec80cf",
               "sourceBlockHash": "0x207a0be28232e64fb984ac0ad1ea6e79cb32bbbf8217962277a4b2c9bc802997",
+              "sourceBlockNumber": 23362132,
               "sourceTxHash": "0xd060a6b7f8946bd0c8c8fb1bedf58f81a5745c250ef800e1bc18b00d57c79013",
-              "status": "InProgress"
+              "status": "InProgress",
+              "timestamp": 1757862707
             }
         ]
         ```
-
-### Map slot to Ethereum block number (Deprecated)
-
-* To map Ethereum slot to a block number:
-
-    * Request
-
-      `GET /beacon/slot/:slot_number`
-
-      ```bash
-      # curl <endpoint URL>/beacon/slot/<slotNumber>
-      curl http://localhost:8080/beacon/slot/4448512
-      ```
-
-    * Response
-
-      ```json
-      {
-        "blockHash":"0x5282299b298fe1d7238f1a48aa0f5e7cc19ccbcdeeba020b610db78abeb0d52b",
-        "blockNumber":5380093
-      }
-      ```
 
 ### Examples of using bridge api 
 

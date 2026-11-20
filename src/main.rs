@@ -46,7 +46,6 @@ async fn alive() -> Result<Json<Value>, StatusCode> {
     Ok(Json(json!({ "name": "Avail Bridge API" })))
 }
 
-#[inline(always)]
 async fn info(State(state): State<Arc<AppState>>) -> Result<Json<Value>, StatusCode> {
     Ok(Json(json!({
         "vectorXContractAddress": state.contract_address,
@@ -56,8 +55,7 @@ async fn info(State(state): State<Arc<AppState>>) -> Result<Json<Value>, StatusC
     })))
 }
 
-#[inline(always)]
-async fn versions(State(_state): State<Arc<AppState>>) -> Result<Json<Value>, StatusCode> {
+async fn versions() -> Result<Json<Value>, StatusCode> {
     Ok(Json(json!(["v1"])))
 }
 
@@ -91,7 +89,7 @@ async fn main() {
         .unwrap();
 
     const SUPPORTED_CHAIN_IDS: [u64; 7] = [1, 123, 32657, 84532, 11155111, 17000, 421614];
-    // loop through expected_chain_ids and store the chain information, if value is missing, skip chain_id
+    // loop through SUPPORTED_CHAIN_IDS and store the chain information, if value is missing, skip chain_id
     let chains = SUPPORTED_CHAIN_IDS
         .iter()
         .filter_map(|&chain_id| {
@@ -172,16 +170,6 @@ async fn main() {
             .ok()
             .and_then(|proof_response| proof_response.parse::<u32>().ok())
             .unwrap_or(172800),
-        slot_mapping_cache_maxage: env::var("SLOT_MAPPING_CACHE_MAXAGE")
-            .ok()
-            .and_then(|slot_mapping_response| slot_mapping_response.parse::<u32>().ok())
-            .unwrap_or(172800),
-        transactions_cache_maxage: env::var("TRANSACTIONS_CACHE_MAXAGE")
-            .ok()
-            .and_then(|transactions_mapping_response| {
-                transactions_mapping_response.parse::<u32>().ok()
-            })
-            .unwrap_or(60),
         db,
         chains,
         helios_update_frequency: env::var("HELIOS_UPDATE_FREQUENCY")
@@ -199,8 +187,8 @@ async fn main() {
         .route("/versions", get(versions))
         .route("/v1/info", get(info))
         .route("/v1/eth/proof/{block_hash}", get(get_eth_proof)) // get proof from avail for ethereum
-        .route("/v1/eth/head", get(get_eth_head)) // fetch head form eth contract
-        .route("/v1/avl/head", get(get_avl_head)) // fetch head form avail pallet
+        .route("/v1/eth/head", get(get_eth_head)) // fetch head from avail pallet
+        .route("/v1/avl/head", get(get_avl_head)) // fetch head from eth contract
         .route(
             "/v1/avl/proof/{block_hash}/{message_id}",
             get(get_avl_proof), // get proof from ethereum for avail

@@ -31,7 +31,6 @@ use std::time::Duration;
 use tracing::info;
 
 /// get_eth_head returns Ethereum head with the latest slot/block that is stored and a time.
-#[inline(always)]
 pub(crate) async fn get_eth_head(
     State(state): State<Arc<AppState>>,
 ) -> Result<impl IntoResponse, ErrorResponse> {
@@ -66,7 +65,6 @@ pub(crate) async fn get_eth_head(
 }
 
 /// get_avl_head returns start and end blocks which the contract has commitments
-#[inline(always)]
 pub(crate) async fn get_avl_head(
     State(state): State<Arc<AppState>>,
 ) -> Result<impl IntoResponse, ErrorResponse> {
@@ -114,7 +112,6 @@ pub(crate) async fn get_avl_head(
         .into_response())
 }
 
-#[inline(always)]
 pub(crate) async fn get_head(
     Path(chain_id): Path<u64>,
     State(state): State<Arc<AppState>>,
@@ -191,7 +188,7 @@ pub(crate) async fn track_slot_avail_task(state: Arc<AppState>) -> Result<()> {
                     "0x{}{}{}",
                     hex::encode(twox_128(pallet.as_bytes())),
                     hex::encode(twox_128(timestamp.as_bytes())),
-                    &head_str[2..].to_string()
+                    &head_str[2..]
                 );
 
                 let timestamp_str: String = state
@@ -209,17 +206,12 @@ pub(crate) async fn track_slot_avail_task(state: Arc<AppState>) -> Result<()> {
                 let timestamp: u64 = Decode::decode(&mut timestamp_from_hex.as_slice())
                     .context("timestamp decode 2")?;
 
-                let slot_block_head = SLOT_BLOCK_HEAD.read().await;
-                if let Some((old_slot, _old_block, _old_hash, _old_timestamp)) =
-                    slot_block_head.as_ref()
-                {
-                    if old_slot == &slot {
-                        tokio::time::sleep(Duration::from_secs(60 * 10)).await;
-                        continue;
-                    }
+                // The read guard is dropped at the end of this statement, before the sleep.
+                let old_slot = SLOT_BLOCK_HEAD.read().await.as_ref().map(|head| head.0);
+                if old_slot == Some(slot) {
+                    tokio::time::sleep(Duration::from_secs(60 * 10)).await;
+                    continue;
                 }
-
-                drop(slot_block_head);
 
                 let response = state
                     .request_client
