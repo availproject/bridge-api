@@ -3,7 +3,7 @@ use crate::contracts::SP1Vector;
 use crate::error::{ErrorResponse, UpstreamError};
 #[cfg(test)]
 use crate::state::test_state;
-use crate::state::{AppState, SLOT_BLOCK_HEAD};
+use crate::state::{AppState, Chain, SLOT_BLOCK_HEAD};
 
 use alloy::primitives::{B256, hex};
 use anyhow::{Context, Result, anyhow};
@@ -124,10 +124,7 @@ pub(crate) async fn get_head(
         )
     })?;
 
-    let contract = SP1Vector::new(chain.contract_address, chain.provider.clone());
-    let head = contract.latestBlock().call().await.map_err(|_| {
-        let e = UpstreamError::Rpc;
-        tracing::error!("❌ Cannot get latest block from contract: {:?}", e);
+    let head = chain_head(chain, chain_id).await.map_err(|e| {
         ErrorResponse::with_status_and_headers(
             anyhow!("{e:#}"),
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -135,7 +132,6 @@ pub(crate) async fn get_head(
         )
     })?;
 
-    tracing::debug!("✅ Latest block on chain {}: {}", chain_id, head);
     Ok((
         StatusCode::OK,
         [(
@@ -148,6 +144,19 @@ pub(crate) async fn get_head(
         Json(json!(ChainHeadResponse { head })),
     )
         .into_response())
+}
+
+/// chain_head returns the latest Avail block that the chain's contract has a commitment for
+pub(crate) async fn chain_head(chain: &Chain, chain_id: u64) -> Result<u32, UpstreamError> {
+    let contract = SP1Vector::new(chain.contract_address, chain.provider.clone());
+    let head = contract.latestBlock().call().await.map_err(|_| {
+        let e = UpstreamError::Rpc;
+        tracing::error!("❌ Cannot get latest block from contract: {:?}", e);
+        e
+    })?;
+
+    tracing::debug!("✅ Latest block on chain {}: {}", chain_id, head);
+    Ok(head)
 }
 
 pub(crate) async fn track_slot_avail_task(state: Arc<AppState>) -> Result<()> {
@@ -274,7 +283,7 @@ pub struct HeadResponseV2 {
     pub timestamp_diff: u64,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize)]
 pub struct ChainHeadResponse {
     pub head: u32,
 }
