@@ -315,7 +315,7 @@ where
 }
 
 #[cfg(test)]
-async fn error_body(response: Response) -> (StatusCode, String) {
+pub(crate) async fn error_body(response: Response) -> (StatusCode, String) {
     let status = response.status();
     let body = to_bytes(response.into_body(), 2048).await.unwrap();
     (status, String::from_utf8(body.to_vec()).unwrap())

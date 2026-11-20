@@ -1,6 +1,10 @@
 use self::TxDirection::{AvailEth, EthAvail};
 use crate::error::{ErrorResponse, UpstreamError};
+#[cfg(test)]
+use crate::heads::error_body;
 use crate::heads::{HeaderBlockNumber, RangeBlocksAPIResponse};
+#[cfg(test)]
+use crate::state::test_state;
 use crate::state::{AppState, SLOT_BLOCK_HEAD};
 
 use anyhow::anyhow;
@@ -17,6 +21,8 @@ use serde_json::json;
 use serde_with::serde_as;
 use sp_core::H160;
 use sqlx::FromRow;
+#[cfg(test)]
+use sqlx::postgres::PgPoolOptions;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -46,7 +52,8 @@ pub(crate) async fn transactions(
             true
         )
         .fetch_all(&state.db)
-        .await?;
+        .await
+        .map_err(database_error)?;
 
         let slot_block_head = SLOT_BLOCK_HEAD.read().await;
         let (_slot, last_eth_block, _hash, helios_update_timestamp) =
@@ -101,7 +108,8 @@ pub(crate) async fn transactions(
             true
         )
         .fetch_all(&state.db)
-        .await?;
+        .await
+        .map_err(database_error)?;
 
         // If the range or the header request fails, the rows keep their DB status and get no estimate.
         let range_end = fetch_range_blocks(&state)
@@ -178,6 +186,15 @@ pub(crate) async fn transactions(
         Json(json!(transaction_data_results)),
     )
         .into_response())
+}
+
+/// Logs a failed query and answers with a fixed text, so the client does not see the sqlx text.
+fn database_error(e: sqlx::Error) -> ErrorResponse {
+    tracing::error!("❌ Cannot fetch transactions: {e:#}");
+    ErrorResponse::with_status(
+        anyhow!(UpstreamError::Database),
+        StatusCode::INTERNAL_SERVER_ERROR,
+    )
 }
 
 async fn fetch_range_blocks(
@@ -365,6 +382,81 @@ impl TransactionData {
             destination_tx_hash,
         }
     }
+}
+
+#[cfg(test)]
+fn state_without_database() -> Arc<AppState> {
+    let mut state = Arc::into_inner(test_state()).unwrap();
+    // Nothing listens here. The short timeout stops the pool from retrying for 30 seconds.
+    state.db = PgPoolOptions::new()
+        .acquire_timeout(Duration::from_millis(100))
+        .connect_lazy("postgresql://avail:avail@127.0.0.1:1/ui-indexer")
+        .unwrap();
+    Arc::new(state)
+}
+
+/// Collects the log lines of one test.
+#[cfg(test)]
+#[derive(Clone, Default)]
+struct LogBuffer(Arc<std::sync::Mutex<Vec<u8>>>);
+
+#[cfg(test)]
+impl std::io::Write for LogBuffer {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().unwrap().extend_from_slice(buf);
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+// One test checks the body and the log line. tracing caches, per log call site, whether a
+// subscriber wants the event. A second test that reaches `database_error` on a thread without a
+// subscriber can cache "no" first, and then this test's subscriber gets nothing.
+#[tokio::test]
+async fn test_transactions_database_error_is_logged_and_gets_a_fixed_body() {
+    let log = LogBuffer::default();
+    let writer = log.clone();
+    let _guard = tracing::subscriber::set_default(
+        tracing_subscriber::fmt()
+            .with_ansi(false)
+            .with_writer(move || writer.clone())
+            .finish(),
+    );
+
+    let mut answers = vec![];
+    for query in [
+        TransactionQueryParams {
+            eth_address: Some(H160::zero()),
+            avail_address: None,
+        },
+        TransactionQueryParams {
+            eth_address: None,
+            avail_address: Some("5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY".to_owned()),
+        },
+    ] {
+        let response = transactions(Query(query), State(state_without_database()))
+            .await
+            .into_response();
+        answers.push(error_body(response).await);
+    }
+
+    let fixed_text = (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        r#"{"error":"database request failed"}"#.to_owned(),
+    );
+    assert_eq!(answers, [fixed_text.clone(), fixed_text]);
+
+    // One line for each of the two queries.
+    let log = String::from_utf8(log.0.lock().unwrap().clone()).unwrap();
+    assert_eq!(
+        log.matches("Cannot fetch transactions: pool timed out")
+            .count(),
+        2,
+        "{log}"
+    );
 }
 
 #[test]

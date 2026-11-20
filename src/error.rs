@@ -81,6 +81,7 @@ pub enum UpstreamError {
     Rpc,
     Beacon,
     MerkleProofService,
+    Database,
 }
 
 impl std::fmt::Display for UpstreamError {
@@ -89,6 +90,7 @@ impl std::fmt::Display for UpstreamError {
             UpstreamError::Rpc => "chain RPC request failed",
             UpstreamError::Beacon => "beacon request failed",
             UpstreamError::MerkleProofService => "merkle proof service request failed",
+            UpstreamError::Database => "database request failed",
         })
     }
 }
