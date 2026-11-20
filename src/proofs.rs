@@ -1,8 +1,10 @@
-use crate::error::{ErrorResponse, UpstreamError};
+use crate::error::{ErrorResponse, FailureKind, UpstreamError};
 use crate::heads::{HeaderBlockNumber, chain_head};
 use crate::state::AppState;
 #[cfg(test)]
 use crate::state::test_state;
+#[cfg(test)]
+use crate::test_util::{LogBuffer, rpc, serve};
 
 use alloy::primitives::{Address, B256, U256};
 use anyhow::{Result, anyhow};
@@ -84,9 +86,10 @@ pub(crate) async fn get_eth_proof(
                 &[("Cache-Control", "public, max-age=60, must-revalidate")],
             )
         })?
-        .map_err(|_| {
+        .map_err(|source| {
             let e = UpstreamError::MerkleProofService;
-            tracing::error!("❌ Merkle proof api response was unsuccessful. Error: {e:#}");
+            let kind = FailureKind::from(&source);
+            tracing::error!("❌ Merkle proof api response was unsuccessful. Error: {e:#} ({kind})");
             ErrorResponse::with_status_and_headers(
                 anyhow::anyhow!("Something went wrong."),
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -341,9 +344,10 @@ pub(crate) async fn get_proof(
                 &[("Cache-Control", "public, max-age=60, immutable")],
             ));
         }
-        Err(_) => {
+        Err(source) => {
             let err = UpstreamError::MerkleProofService;
-            tracing::error!("Cannot get merkle proof api response {:?}", err);
+            let kind = FailureKind::from(&source);
+            tracing::error!("Cannot get merkle proof api response {err:?} ({kind})");
             return Err(ErrorResponse::with_status_and_headers(
                 anyhow!("error: {err}"),
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -657,6 +661,7 @@ async fn test_proof_error_when_chain_rpc_is_unreachable() {
     tokio::spawn(async move { axum::serve(listener, rpc).await });
 
     // The Avail RPC answers. Chain 1 of the test state has an RPC URL where nothing listens.
+    let (log, _guard) = LogBuffer::capture();
     let mut state = Arc::into_inner(test_state()).unwrap();
     state.avail_client = HttpClientBuilder::default().build(&url).unwrap();
     let query = ProofQueryStruct {
@@ -676,4 +681,71 @@ async fn test_proof_error_when_chain_rpc_is_unreachable() {
         body,
         r#"{"error":"Cannot get chain head. Cannot fetch chain head for chain 1"}"#
     );
+    let log = log.text();
+    let line =
+        "❌ Cannot get latest block from contract: chain RPC request failed (connect failed)";
+    assert!(log.contains(line), "{log}");
+}
+
+/// The state for a proof request: the Avail RPC and the chain RPC of chain 1 answer, and nothing
+/// listens at the URL of the merkle proof service.
+#[cfg(test)]
+async fn state_without_merkle_proof_service() -> Arc<AppState> {
+    use crate::state::{Chain, chain_provider};
+    use axum::routing::post;
+    use std::collections::HashMap;
+
+    let url = serve(Router::new().route("/", post(rpc))).await;
+    let mut state = Arc::into_inner(test_state()).unwrap();
+    state.avail_client = HttpClientBuilder::default().build(&url).unwrap();
+    state.chains = HashMap::from([(
+        1,
+        Chain {
+            provider: chain_provider(url.parse().unwrap()),
+            contract_address: Address::ZERO,
+        },
+    )]);
+    Arc::new(state)
+}
+
+#[tokio::test]
+async fn test_eth_proof_error_when_merkle_proof_service_is_unreachable() {
+    let (log, _guard) = LogBuffer::capture();
+    let state = state_without_merkle_proof_service().await;
+    let response = get_eth_proof(
+        Path(B256::ZERO),
+        Query(IndexStruct { index: 0 }),
+        State(state),
+    )
+    .await
+    .into_response();
+    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    let body = to_bytes(response.into_body(), 2048).await.unwrap();
+    assert_eq!(body, r#"{"error":"Something went wrong."}"#);
+    let log = log.text();
+    let line = "❌ Merkle proof api response was unsuccessful. Error: merkle proof service request failed (connect failed)";
+    assert!(log.contains(line), "{log}");
+}
+
+#[tokio::test]
+async fn test_proof_error_when_merkle_proof_service_is_unreachable() {
+    let (log, _guard) = LogBuffer::capture();
+    let state = state_without_merkle_proof_service().await;
+    let query = ProofQueryStruct {
+        index: 0,
+        block_hash: B256::ZERO,
+    };
+    let response = get_proof(Path(1), Query(query), State(state))
+        .await
+        .into_response();
+    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    let body = to_bytes(response.into_body(), 2048).await.unwrap();
+    assert_eq!(
+        body,
+        r#"{"error":"error: merkle proof service request failed"}"#
+    );
+    let log = log.text();
+    let line =
+        "Cannot get merkle proof api response merkle proof service request failed (connect failed)";
+    assert!(log.contains(line), "{log}");
 }

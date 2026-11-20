@@ -1,11 +1,11 @@
 use crate::beacon::{ExecutionBlock, Root};
 use crate::contracts::SP1Vector;
-use crate::error::{ErrorResponse, UpstreamError};
+use crate::error::{ErrorResponse, FailureKind, UpstreamError};
 #[cfg(test)]
 use crate::state::test_state;
 use crate::state::{AppState, Chain, SLOT_BLOCK_HEAD};
 #[cfg(test)]
-use crate::test_util::LogBuffer;
+use crate::test_util::{LogBuffer, rpc, serve};
 
 use alloy::primitives::{B256, hex};
 use anyhow::{Context, Result, anyhow};
@@ -77,28 +77,17 @@ pub(crate) async fn get_avl_head(
         state.contract_chain_id,
         state.contract_address
     );
-    let response = state.request_client.get(url).send().await.map_err(|_| {
+    let failed = |source: reqwest::Error| {
         let e = UpstreamError::MerkleProofService;
-        tracing::error!("❌ Cannot parse range blocks: {e:#}");
-        ErrorResponse::with_status_and_headers(
-            anyhow!("{e:#}"),
-            StatusCode::INTERNAL_SERVER_ERROR,
-            &[("Cache-Control", "public, max-age=60, must-revalidate")],
-        )
-    })?;
-
+        let kind = FailureKind::from(&source);
+        tracing::error!("❌ Cannot parse range blocks: {e:#} ({kind})");
+        ErrorResponse::upstream_failed(e)
+    };
+    let response = state.request_client.get(url).send().await.map_err(failed)?;
     let range_blocks = response
         .json::<RangeBlocksAPIResponse>()
         .await
-        .map_err(|_| {
-            let e = UpstreamError::MerkleProofService;
-            tracing::error!("❌ Cannot parse range blocks: {e:#}");
-            ErrorResponse::with_status_and_headers(
-                anyhow!("{e:#}"),
-                StatusCode::INTERNAL_SERVER_ERROR,
-                &[("Cache-Control", "public, max-age=60, must-revalidate")],
-            )
-        })?;
+        .map_err(failed)?;
 
     Ok((
         StatusCode::OK,
@@ -126,13 +115,9 @@ pub(crate) async fn get_head(
         )
     })?;
 
-    let head = chain_head(chain, chain_id).await.map_err(|e| {
-        ErrorResponse::with_status_and_headers(
-            anyhow!("{e:#}"),
-            StatusCode::INTERNAL_SERVER_ERROR,
-            &[("Cache-Control", "public, max-age=60, must-revalidate")],
-        )
-    })?;
+    let head = chain_head(chain, chain_id)
+        .await
+        .map_err(ErrorResponse::upstream_failed)?;
 
     Ok((
         StatusCode::OK,
@@ -151,9 +136,10 @@ pub(crate) async fn get_head(
 /// chain_head returns the latest Avail block that the chain's contract has a commitment for
 pub(crate) async fn chain_head(chain: &Chain, chain_id: u64) -> Result<u32, UpstreamError> {
     let contract = SP1Vector::new(chain.contract_address, chain.provider.clone());
-    let head = contract.latestBlock().call().await.map_err(|_| {
+    let head = contract.latestBlock().call().await.map_err(|source| {
         let e = UpstreamError::Rpc;
-        tracing::error!("❌ Cannot get latest block from contract: {:?}", e);
+        let kind = FailureKind::from(&source);
+        tracing::error!("❌ Cannot get latest block from contract: {e:?} ({kind})");
         e
     })?;
 
@@ -189,6 +175,11 @@ where
             Err(e) => return e,
         }
     }
+}
+
+/// The error for a failed request to the beacon API: the fixed text and why it failed.
+fn beacon_failed(source: reqwest::Error) -> anyhow::Error {
+    anyhow!("{} ({})", UpstreamError::Beacon, FailureKind::from(&source))
 }
 
 /// track_slot_pass reads the Ethereum head from the Vector pallet once and stores it. It returns
@@ -257,11 +248,12 @@ async fn track_slot_pass(state: &AppState) -> Result<Duration> {
         ))
         .send()
         .await
-        .map_err(|_| UpstreamError::Beacon)
+        .map_err(beacon_failed)
         .context("Cannot get beacon block")?;
     let root = response
         .json::<Root>()
         .await
+        .map_err(beacon_failed)
         .context("Cannot decode beacon response")?;
     let (bl, hash) = match root.data.message.body.execution_block()? {
         ExecutionBlock::Known { number, hash } => (number, hash),
@@ -336,18 +328,66 @@ pub(crate) async fn error_body(response: Response) -> (StatusCode, String) {
 
 #[tokio::test]
 async fn test_head_error_when_rpc_is_unreachable() {
+    let (log, _guard) = LogBuffer::capture();
     let response = get_head(Path(1), State(test_state())).await.into_response();
     let (status, body) = error_body(response).await;
     assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
     assert_eq!(body, r#"{"error":"chain RPC request failed"}"#);
+    // The log line says why the request failed. The body does not.
+    let log = log.text();
+    let line =
+        "❌ Cannot get latest block from contract: chain RPC request failed (connect failed)";
+    assert!(log.contains(line), "{log}");
 }
 
 #[tokio::test]
 async fn test_avl_head_error_when_merkle_proof_service_is_unreachable() {
+    let (log, _guard) = LogBuffer::capture();
     let response = get_avl_head(State(test_state())).await.into_response();
+    assert_eq!(
+        response.headers()["Cache-Control"],
+        "public, max-age=60, must-revalidate"
+    );
     let (status, body) = error_body(response).await;
     assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
     assert_eq!(body, r#"{"error":"merkle proof service request failed"}"#);
+    let log = log.text();
+    let line = "❌ Cannot parse range blocks: merkle proof service request failed (connect failed)";
+    assert!(log.contains(line), "{log}");
+}
+
+/// The state for a head task pass: the Avail RPC answers, and the beacon API is at `beacon_url`.
+#[cfg(test)]
+async fn head_task_state(beacon_url: String) -> AppState {
+    use axum::routing::post;
+    use jsonrpsee::http_client::HttpClientBuilder;
+
+    let avail_url = serve(axum::Router::new().route("/", post(rpc))).await;
+    let mut state = Arc::into_inner(test_state()).unwrap();
+    state.avail_client = HttpClientBuilder::default().build(avail_url).unwrap();
+    state.beaconchain_base_url = beacon_url;
+    state
+}
+
+#[tokio::test]
+async fn test_head_task_error_when_beacon_api_is_unreachable() {
+    let state = head_task_state("http://127.0.0.1:1".to_owned()).await;
+    let e = track_slot_pass(&state).await.unwrap_err();
+    assert_eq!(
+        format!("{e:#}"),
+        "Cannot get beacon block: beacon request failed (connect failed)"
+    );
+}
+
+#[tokio::test]
+async fn test_head_task_error_when_beacon_answer_is_not_json() {
+    let beacon_url = serve(axum::Router::new().fallback(|| async { "this is not json" })).await;
+    let state = head_task_state(beacon_url).await;
+    let e = track_slot_pass(&state).await.unwrap_err();
+    assert_eq!(
+        format!("{e:#}"),
+        "Cannot decode beacon response: beacon request failed (bad response)"
+    );
 }
 
 #[tokio::test]
