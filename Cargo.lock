@@ -1825,11 +1825,9 @@ dependencies = [
  "http",
  "jsonrpsee",
  "lazy_static",
- "log",
  "reqwest 0.12.28",
  "serde",
  "serde_json",
- "serde_with",
  "sha3 0.10.9",
  "sp-core 34.0.0",
  "sp-io 34.0.0",
@@ -1839,7 +1837,6 @@ dependencies = [
  "tower-http",
  "tracing",
  "tracing-subscriber 0.3.23",
- "uuid",
 ]
 
 [[package]]
@@ -8452,17 +8449,6 @@ name = "utf8_iter"
 version = "1.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b6c140620e7ffbb22c2dee59cafe6084a59b5ffc27a8859a5f0d494b5d52b6be"
-
-[[package]]
-name = "uuid"
-version = "1.29.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4a0e2d11620c50695fe12bbbfde96b3477fe606e7284c22d505c12ce51214514"
-dependencies = [
- "getrandom 0.4.3",
- "js-sys",
- "wasm-bindgen",
-]
 
 [[package]]
 name = "valuable"

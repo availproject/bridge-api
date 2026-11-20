@@ -30,22 +30,12 @@ use tokio::join;
 use tokio::task::JoinHandle;
 use tracing::warn;
 
-#[inline(always)]
 pub(crate) async fn get_eth_proof(
     Path(block_hash): Path<B256>,
     Query(index_struct): Query<IndexStruct>,
     State(state): State<Arc<AppState>>,
 ) -> Result<impl IntoResponse, ErrorResponse> {
-    let cloned_state = state.clone();
-    let data_proof_response_fut = tokio::spawn(async move {
-        cloned_state
-            .avail_client
-            .request(
-                "kate_queryDataProof",
-                rpc_params![index_struct.index, &block_hash],
-            )
-            .await
-    });
+    let data_proof_response_fut = spawn_kate_proof(state.clone(), index_struct.index, block_hash);
 
     let eth_proof_cache_maxage = state.eth_proof_cache_maxage;
     let eth_proof_failure_cache_maxage = state.eth_proof_failure_cache_maxage;
@@ -58,15 +48,15 @@ pub(crate) async fn get_eth_proof(
         block_hash
     );
 
-    let mekrle_proof_response_fut = tokio::spawn(async move {
+    let merkle_proof_response_fut = tokio::spawn(async move {
         let merkle_proof_response = state.request_client.get(url).send().await;
         match merkle_proof_response {
-            Ok(resp) => resp.json::<MekrleProofAPIResponse>().await,
+            Ok(resp) => resp.json::<MerkleProofAPIResponse>().await,
             Err(err) => Err(err),
         }
     });
     let (data_proof, merkle_proof_response) =
-        join!(data_proof_response_fut, mekrle_proof_response_fut);
+        join!(data_proof_response_fut, merkle_proof_response_fut);
     let data_proof_res: KateQueryDataProofResponse = data_proof
         .map_err(|e| {
             tracing::error!("❌ Failed to fetch the kate query data. Error: {e:#}");
@@ -104,10 +94,10 @@ pub(crate) async fn get_eth_proof(
             )
         })?;
     let merkle_data = match merkle_proof_data {
-        MekrleProofAPIResponse {
+        MerkleProofAPIResponse {
             data: Some(data), ..
         } => data,
-        MekrleProofAPIResponse {
+        MerkleProofAPIResponse {
             success: Some(false),
             error: Some(data),
             ..
@@ -155,20 +145,11 @@ pub(crate) async fn get_eth_proof(
             "Cache-Control",
             format!("public, max-age={}, immutable", eth_proof_cache_maxage),
         )],
-        Json(json!(AggregatedResponse {
-            data_root_proof: merkle_data.merkle_branch,
-            leaf_proof: data_proof_res.data_proof.proof,
-            range_hash: merkle_data.range_hash,
-            data_root_index: merkle_data.index,
-            leaf: data_proof_res.data_proof.leaf,
-            leaf_index: data_proof_res.data_proof.leaf_index,
-            data_root: data_proof_res.data_proof.roots.data_root,
-            blob_root: data_proof_res.data_proof.roots.blob_root,
-            bridge_root: data_proof_res.data_proof.roots.bridge_root,
-            data_root_commitment: merkle_data.data_commitment,
-            block_hash,
-            message: data_proof_res.message
-        })),
+        Json(json!(AggregatedResponse::new(
+            merkle_data,
+            data_proof_res,
+            block_hash
+        ))),
     )
         .into_response())
 }
@@ -184,7 +165,6 @@ fn is_rate_limited(e: &ClientError) -> bool {
     )
 }
 
-#[inline(always)]
 pub(crate) async fn get_avl_proof(
     Path((block_hash, message_id_query)): Path<(B256, U256)>,
     State(state): State<Arc<AppState>>,
@@ -253,7 +233,6 @@ pub(crate) async fn get_avl_proof(
 }
 
 /// get_proof returns a proof from Avail for the provided chain id
-#[inline(always)]
 pub(crate) async fn get_proof(
     Path(chain_id): Path<u64>,
     Query(query_proof): Query<ProofQueryStruct>,
@@ -284,34 +263,30 @@ pub(crate) async fn get_proof(
                 &[("Cache-Control", "public, max-age=60, immutable")],
             )
         })?;
-    {
-        let head = fetch_chain_head(state.clone(), chain_id)
-            .await
-            .map_err(|e| {
-                ErrorResponse::with_status_and_headers(
-                    anyhow!("Cannot get chain head. {e:#}"),
-                    StatusCode::NOT_FOUND,
-                    &[("Cache-Control", "public, max-age=60, immutable")],
-                )
-            })?;
-        {
-            if requested_block.number > head {
-                tracing::warn!(
-                    "Contract not yet synced for the provided block hash {}, the last synced block number {}",
-                    block_hash,
-                    head
-                );
+    let head = fetch_chain_head(state.clone(), chain_id)
+        .await
+        .map_err(|e| {
+            ErrorResponse::with_status_and_headers(
+                anyhow!("Cannot get chain head. {e:#}"),
+                StatusCode::NOT_FOUND,
+                &[("Cache-Control", "public, max-age=60, immutable")],
+            )
+        })?;
+    if requested_block.number > head {
+        tracing::warn!(
+            "Contract not yet synced for the provided block hash {}, the last synced block number {}",
+            block_hash,
+            head
+        );
 
-                return Err(ErrorResponse::with_status_and_headers(
-                    anyhow!(
-                        "Provided block hash {:?} is not yet in the range.",
-                        block_hash
-                    ),
-                    StatusCode::NOT_FOUND,
-                    &[("Cache-Control", "public, max-age=60, immutable")],
-                ));
-            }
-        }
+        return Err(ErrorResponse::with_status_and_headers(
+            anyhow!(
+                "Provided block hash {:?} is not yet in the range.",
+                block_hash
+            ),
+            StatusCode::NOT_FOUND,
+            &[("Cache-Control", "public, max-age=60, immutable")],
+        ));
     }
 
     let data_proof_response_fut = spawn_kate_proof(state.clone(), index, block_hash);
@@ -352,10 +327,10 @@ pub(crate) async fn get_proof(
             &[("Cache-Control", "max-age=60, must-revalidate")],
         )
     })? {
-        Ok(MekrleProofAPIResponse {
+        Ok(MerkleProofAPIResponse {
             data: Some(data), ..
         }) => data,
-        Ok(MekrleProofAPIResponse {
+        Ok(MerkleProofAPIResponse {
             success: Some(false),
             error: Some(data),
             ..
@@ -428,7 +403,7 @@ fn spawn_merkle_proof_range_fetch(
     contract_chain_id: u64,
     contract_address: Address,
     block_hash: B256,
-) -> JoinHandle<Result<MekrleProofAPIResponse, reqwest::Error>> {
+) -> JoinHandle<Result<MerkleProofAPIResponse, reqwest::Error>> {
     let url = format!(
         "{}?chainName={}&contractChainId={}&contractAddress={}&blockHash={}",
         state.merkle_proof_service_base_url,
@@ -440,7 +415,7 @@ fn spawn_merkle_proof_range_fetch(
     tokio::spawn(async move {
         let res = state.request_client.get(url).send().await;
         match res {
-            Ok(resp) => resp.json::<MekrleProofAPIResponse>().await,
+            Ok(resp) => resp.json::<MerkleProofAPIResponse>().await,
             Err(e) => Err(e),
         }
     })
@@ -473,15 +448,14 @@ pub struct ProofQueryStruct {
     pub block_hash: B256,
 }
 
-#[derive(Deserialize, Serialize)]
+#[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct KateQueryDataProofResponse {
     pub data_proof: DataProof,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub message: Option<AddressedMessage>,
 }
 
-#[derive(Deserialize, Serialize)]
+#[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DataProof {
     pub roots: Roots,
@@ -490,7 +464,7 @@ pub struct DataProof {
     pub leaf: B256,
 }
 
-#[derive(Deserialize, Serialize)]
+#[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Roots {
     pub data_root: B256,
@@ -511,7 +485,7 @@ pub struct StorageProof {
 }
 
 #[derive(Deserialize)]
-pub struct MekrleProofAPIResponse {
+pub struct MerkleProofAPIResponse {
     pub data: Option<MerkleProofData>,
     pub error: Option<String>,
     pub success: Option<bool>,

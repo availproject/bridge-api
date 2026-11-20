@@ -13,7 +13,6 @@ pub struct Data {
 
 #[derive(Debug, Deserialize)]
 pub struct Message {
-    pub slot: String,
     pub body: MessageBody,
 }
 
