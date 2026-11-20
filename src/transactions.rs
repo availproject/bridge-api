@@ -6,6 +6,8 @@ use crate::heads::{HeaderBlockNumber, RangeBlocksAPIResponse};
 #[cfg(test)]
 use crate::state::test_state;
 use crate::state::{AppState, SLOT_BLOCK_HEAD};
+#[cfg(test)]
+use crate::test_util::LogBuffer;
 
 use anyhow::anyhow;
 use axum::{
@@ -349,36 +351,11 @@ fn state_without_database() -> Arc<AppState> {
     Arc::new(state)
 }
 
-/// Collects the log lines of one test.
-#[cfg(test)]
-#[derive(Clone, Default)]
-struct LogBuffer(Arc<std::sync::Mutex<Vec<u8>>>);
-
-#[cfg(test)]
-impl std::io::Write for LogBuffer {
-    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        self.0.lock().unwrap().extend_from_slice(buf);
-        Ok(buf.len())
-    }
-
-    fn flush(&mut self) -> std::io::Result<()> {
-        Ok(())
-    }
-}
-
-// One test checks the body and the log line. tracing caches, per log call site, whether a
-// subscriber wants the event. A second test that reaches `database_error` on a thread without a
-// subscriber can cache "no" first, and then this test's subscriber gets nothing.
+// One test checks the body and the log line, because every test that reaches `database_error`
+// must capture the log (see `LogBuffer`).
 #[tokio::test]
 async fn test_transactions_database_error_is_logged_and_gets_a_fixed_body() {
-    let log = LogBuffer::default();
-    let writer = log.clone();
-    let _guard = tracing::subscriber::set_default(
-        tracing_subscriber::fmt()
-            .with_ansi(false)
-            .with_writer(move || writer.clone())
-            .finish(),
-    );
+    let (log, _guard) = LogBuffer::capture();
 
     let mut answers = vec![];
     for query in [
@@ -404,7 +381,7 @@ async fn test_transactions_database_error_is_logged_and_gets_a_fixed_body() {
     assert_eq!(answers, [fixed_text.clone(), fixed_text]);
 
     // One line for each of the two queries.
-    let log = String::from_utf8(log.0.lock().unwrap().clone()).unwrap();
+    let log = log.text();
     assert_eq!(
         log.matches("Cannot fetch transactions: pool timed out")
             .count(),

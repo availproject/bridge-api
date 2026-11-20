@@ -4,6 +4,8 @@ mod error;
 mod heads;
 mod proofs;
 pub mod state;
+#[cfg(test)]
+mod test_util;
 mod transactions;
 
 use crate::heads::{get_avl_head, get_eth_head, get_head, track_slot_avail_task};
@@ -214,10 +216,9 @@ async fn main() {
 
     tokio::spawn(async move {
         tracing::info!("Starting head tracking task");
-        if let Err(e) = track_slot_avail_task(shared_state.clone()).await {
-            tracing::error!("Error occurred, cannot continue: {e:#}");
-            process::exit(1);
-        }
+        let e = track_slot_avail_task(shared_state.clone()).await;
+        tracing::error!("Error occurred, cannot continue: {e:#}");
+        process::exit(1);
     });
     tracing::info!("🚀 Started server on host {} with port {}", host, port);
     axum::serve(listener, app).await.unwrap();
