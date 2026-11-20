@@ -8,7 +8,7 @@ mod transactions;
 
 use crate::heads::{get_avl_head, get_eth_head, get_head, track_slot_avail_task};
 use crate::proofs::{get_avl_proof, get_eth_proof, get_proof};
-use crate::state::{AppState, Chain, chain_provider, parse_rpc_url};
+use crate::state::{AppState, Chain, chain_provider, parse_rpc_url, pg_connect_options};
 use crate::transactions::transactions;
 
 use alloy::primitives::Address;
@@ -75,17 +75,17 @@ async fn main() {
         .and_then(|max_request| max_request.parse::<usize>().ok())
         .unwrap_or(1024);
 
-    let db_url: String = env::var("POSTGRES_URL").unwrap_or("localhost:5432".to_owned());
     // Connection pool
-    let connections_string = format!(
-        "postgresql://{}:{}@{}/{}",
-        env::var("PG_USERNAME").unwrap_or("avail".to_owned()),
-        env::var("PG_PASSWORD").unwrap_or("avail".to_owned()),
-        db_url,
-        env::var("POSTGRES_DB").unwrap_or("ui-indexer".to_owned()),
-    );
+    let db_options = pg_connect_options(
+        &env::var("POSTGRES_URL").unwrap_or("localhost:5432".to_owned()),
+        &env::var("POSTGRES_DB").unwrap_or("ui-indexer".to_owned()),
+        &env::var("PG_USERNAME").unwrap_or("avail".to_owned()),
+        &env::var("PG_PASSWORD").unwrap_or("avail".to_owned()),
+    )
+    .context("Cannot get connection pool")
+    .unwrap();
 
-    let db = PgPool::connect(&connections_string)
+    let db = PgPool::connect_with(db_options)
         .await
         .context("Cannot get connection pool")
         .unwrap();
