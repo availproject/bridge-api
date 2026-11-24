@@ -6,6 +6,8 @@ any off-chain proof verification.
 ## Deploying the bridge API
 
 * Create an `.env` file according to the `.env.example`
+* The eight network settings at the top of `.env.example` are required. If one is missing, or if a number is not
+  valid, the service logs `Invalid settings: ...` and exits. The message names the setting and never its value.
 * To build the service:
 
 ```bash
